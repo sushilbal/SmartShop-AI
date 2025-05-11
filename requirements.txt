@@ -1,0 +1,6 @@
+# Python dependencies for the project
+fastapi
+streamlit
+openai
+pydantic
+uvicorn[standard]
