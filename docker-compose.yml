@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - db_data:/var/lib/postgresql/data # Persist data
+      - db_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     networks:
@@ -15,7 +15,7 @@ services:
 
   backend:
     build:
-      context: ./backend  # Path to the backend Dockerfile
+      context: ./backend
       dockerfile: Dockerfile
     depends_on:
       - db
@@ -23,29 +23,48 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_HOST: db # Use the service name as the hostname
+      POSTGRES_HOST: db
       POSTGRES_PORT: 5432
     ports:
-      - "8000:8000" # Expose the backend API port
+      - "8000:8000"
     networks:
       - smartshop_net
     volumes:
-      - ./backend:/app # Mount the backend code for development
+      - ./backend:/app
 
-  frontend: #Add frontend service
+  frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "80:80"  # Expose the frontend
+      - "80:80"
     networks:
       - smartshop_net
     depends_on:
       - backend
+
+  # New service to initialize the database and load data
+  db_init:
+    build:
+      context: . # The current directory has all the files
+      dockerfile: ./database/Dockerfile_init # Create a new Dockerfile
+    depends_on:
+      - db # Ensure the database is running first
+    environment: # Pass DB credentials as environment variables
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    networks:
+      - smartshop_net
+    volumes:
+      - ./scripts:/app/scripts # Mount the directory with the python script
+    command: ["python", "/app/scripts/populate_db.py"]
 
 networks:
   smartshop_net:
     driver: bridge
 
 volumes:
-  db_data: #named volume
+  db_data:
