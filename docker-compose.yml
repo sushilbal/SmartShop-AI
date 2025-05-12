@@ -1,0 +1,51 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - db_data:/var/lib/postgresql/data # Persist data
+    ports:
+      - "5432:5432"
+    networks:
+      - smartshop_net
+
+  backend:
+    build:
+      context: ./backend  # Path to the backend Dockerfile
+      dockerfile: Dockerfile
+    depends_on:
+      - db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: db # Use the service name as the hostname
+      POSTGRES_PORT: 5432
+    ports:
+      - "8000:8000" # Expose the backend API port
+    networks:
+      - smartshop_net
+    volumes:
+      - ./backend:/app # Mount the backend code for development
+
+  frontend: #Add frontend service
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"  # Expose the frontend
+    networks:
+      - smartshop_net
+    depends_on:
+      - backend
+
+networks:
+  smartshop_net:
+    driver: bridge
+
+volumes:
+  db_data: #named volume
