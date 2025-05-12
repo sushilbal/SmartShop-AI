@@ -1,80 +1,29 @@
 import psycopg2
 import csv
 import os
-from dotenv import load_dotenv
+import logging # Import the logging module
 from psycopg2 import sql # For safe SQL query construction
+from config.config import (
+    DATABASE_URL,
+    PRODUCTS_CSV_PATH,
+    REVIEWS_CSV_PATH,
+    STORE_POLICIES_CSV_PATH,
+    INIT_SQL_PATH
+)
 
-load_dotenv()
+from config.column_mappings import (
+    PRODUCTS_COLUMN_MAP,
+    REVIEWS_COLUMN_MAP,
+    STORE_POLICIES_COLUMN_MAP
+)
 
-# --- Database Configuration ---
-# Set these environment variables or replace with your actual credentials
-DB_HOST = os.getenv('POSTGRES_HOST', 'localhost')
-DB_PORT = os.getenv('POSTGRES_PORT', '5432')
-DB_NAME = os.getenv('POSTGRES_DB', 'smartshop_db') # Replace with your DB name
-DB_USER = os.getenv('POSTGRES_USER', 'your_user')    # Replace with your DB user
-DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'your_password') # Replace with your DB password
-
-# --- CSV File Paths ---
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Construct the base data path relative to the script's location (../data/raw)
-BASE_DATA_PATH = os.path.join(SCRIPT_DIR, '..', 'data', 'raw')
-PRODUCTS_CSV_PATH = os.path.join(BASE_DATA_PATH, 'products.csv')
-REVIEWS_CSV_PATH = os.path.join(BASE_DATA_PATH, 'reviews.csv')
-STORE_POLICIES_CSV_PATH = os.path.join(BASE_DATA_PATH, 'store_policies.csv')
-
-
-# --- SQL Table Definitions (from init.sql) ---
-CREATE_PRODUCTS_TABLE_SQL = """
-CREATE TABLE products (
-    product_id VARCHAR(20) PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    brand VARCHAR(255),
-    category VARCHAR(255),
-    price DECIMAL NOT NULL,
-    description TEXT,
-    stock INTEGER,
-    rating DECIMAL(2,1),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    is_deleted BOOLEAN DEFAULT FALSE
-);
-"""
-
-CREATE_REVIEWS_TABLE_SQL = """
-CREATE TABLE reviews (
-    review_id SERIAL PRIMARY KEY,
-    product_id VARCHAR(20) REFERENCES products(product_id) ON DELETE CASCADE,
-    rating DECIMAL(2,1) NOT NULL,
-    text TEXT,
-    review_date DATE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    is_deleted BOOLEAN DEFAULT FALSE
-);
-"""
-
-CREATE_STORE_POLICIES_TABLE_SQL = """
-CREATE TABLE store_policies (
-    policy_id SERIAL PRIMARY KEY,
-    policy_type VARCHAR(255) NOT NULL,
-    description TEXT NOT NULL,
-    conditions TEXT,
-    timeframe INTEGER,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    is_deleted BOOLEAN DEFAULT FALSE
-);
-"""
+# --- Logger Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
-    conn = psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD
-    )
+    """Establishes a connection to the PostgreSQL database using DATABASE_URL from config."""
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 def table_exists(cursor, table_name):
@@ -94,148 +43,121 @@ def is_table_empty(cursor, table_name):
     cursor.execute(query)
     return cursor.fetchone()[0] == 0
 
-def create_table_if_not_exists(conn, table_name, create_sql):
+def execute_sql_from_file(conn, filepath):
+    """Executes an SQL script from a file."""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        sql_script = f.read()
+    with conn.cursor() as cur:
+        cur.execute(sql_script)
+    conn.commit()
+    logger.info(f"Successfully executed SQL script: {filepath}")
+
+def _populate_table_from_csv(conn, table_name, csv_path, column_map_details):
     """
-    Ensures the table is created with the specified schema.
-    If the table already exists, it is dropped (with CASCADE) and then recreated.
-    If it doesn't exist, it's created.
+    Generic function to populate a table from a CSV file using a defined column map.
+    Skips population if the table is not empty.
     """
     with conn.cursor() as cur:
-        # If the table exists, we drop it to ensure the schema is fresh and correct.
-        if table_exists(cur, table_name):
-            print(f"Table '{table_name}' exists. Dropping it to recreate with the latest schema (using CASCADE)...")
-            # Use CASCADE to drop dependent objects (like foreign key constraints from 'reviews' table)
-            # Using psycopg2.sql.Identifier for safe table name formatting.
-            drop_query = sql.SQL("DROP TABLE IF EXISTS {} CASCADE;").format(sql.Identifier(table_name))
-            cur.execute(drop_query)
-            conn.commit()
-        cur.execute(create_sql)
-        conn.commit()
-        print(f"Table '{table_name}' created successfully.")
-def populate_products(conn):
-    """Populates the products table from its CSV file if the table is empty."""
-    with conn.cursor() as cur:
-        if not is_table_empty(cur, 'products'):
-            print("Table 'products' is not empty. Skipping population.")
+        if not is_table_empty(cur, table_name):
+            logger.info(f"Table '{table_name}' is not empty. Skipping population.")
             return
 
-        print(f"Populating 'products' table from {PRODUCTS_CSV_PATH}...")
-        with open(PRODUCTS_CSV_PATH, 'r', encoding='utf-8') as f:
+        logger.info(f"Populating '{table_name}' table from {csv_path}...")
+
+        db_columns = [details[1] for details in column_map_details]
+        csv_headers = [details[0] for details in column_map_details]
+        transform_funcs = [details[2] for details in column_map_details]
+
+        cols_identifiers = sql.SQL(', ').join(map(sql.Identifier, db_columns))
+        vals_placeholders = sql.SQL(', ').join([sql.Placeholder()] * len(db_columns))
+        insert_query = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+            sql.Identifier(table_name),
+            cols_identifiers,
+            vals_placeholders
+        )
+
+        with open(csv_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            insert_query = """
-                INSERT INTO products (product_id, name, brand, category, price, description, stock, rating)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
-            """
             data_to_insert = []
             for row in reader:
                 try:
-                    stock = int(row['stock']) if row['stock'] else None
-                    rating_str = row.get('rating', '')
-                    rating = float(rating_str) if rating_str else None
-                    
-                    data_to_insert.append((
-                        row['id'], row['name'], row.get('brand'), row.get('category'),
-                        float(row['price']), row.get('description'), stock, rating
-                    ))
-                except (ValueError, KeyError) as e:
-                    print(f"Skipping row in products.csv due to error: {e} in row: {row}")
+                    current_row_values = []
+                    for i, csv_header in enumerate(csv_headers):
+                        raw_value = row.get(csv_header)
+                        transform_func = transform_funcs[i]
+                        processed_value = transform_func(raw_value) if transform_func else raw_value
+                        current_row_values.append(processed_value)
+                    data_to_insert.append(tuple(current_row_values))
+                except (ValueError, TypeError) as e: # Catch errors from transformation
+                    logger.warning(f"Skipping row in {os.path.basename(csv_path)} due to data error: {e} in row: {row}")
                     continue
             
             if data_to_insert:
                 cur.executemany(insert_query, data_to_insert)
                 conn.commit()
-                print(f"Successfully populated 'products' table with {len(data_to_insert)} rows.")
+                logger.info(f"Successfully populated '{table_name}' table with {len(data_to_insert)} rows.")
+
+def populate_products(conn):
+    """Populates the products table from its CSV file if the table is empty."""
+    _populate_table_from_csv(conn, 'products', PRODUCTS_CSV_PATH, PRODUCTS_COLUMN_MAP)
 
 def populate_store_policies(conn):
     """Populates the store_policies table from its CSV file if the table is empty."""
-    with conn.cursor() as cur:
-        if not is_table_empty(cur, 'store_policies'):
-            print("Table 'store_policies' is not empty. Skipping population.")
-            return
-
-        print(f"Populating 'store_policies' table from {STORE_POLICIES_CSV_PATH}...")
-        with open(STORE_POLICIES_CSV_PATH, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            insert_query = """
-                INSERT INTO store_policies (policy_type, description, conditions, timeframe)
-                VALUES (%s, %s, %s, %s);
-            """
-            data_to_insert = []
-            for row in reader:
-                try:
-                    timeframe = int(row['timeframe']) if row['timeframe'] else None
-                    data_to_insert.append((
-                        row['policy_type'], row['description'],
-                        row.get('conditions'), timeframe
-                    ))
-                except (ValueError, KeyError) as e:
-                    print(f"Skipping row in store_policies.csv due to error: {e} in row: {row}")
-                    continue
-            
-            if data_to_insert:
-                cur.executemany(insert_query, data_to_insert)
-                conn.commit()
-                print(f"Successfully populated 'store_policies' table with {len(data_to_insert)} rows.")
+    _populate_table_from_csv(conn, 'store_policies', STORE_POLICIES_CSV_PATH, STORE_POLICIES_COLUMN_MAP)
 
 def populate_reviews(conn):
     """Populates the reviews table from its CSV file if the table is empty."""
-    with conn.cursor() as cur:
-        if not is_table_empty(cur, 'reviews'):
-            print("Table 'reviews' is not empty. Skipping population.")
-            return
-
-        print(f"Populating 'reviews' table from {REVIEWS_CSV_PATH}...")
-        with open(REVIEWS_CSV_PATH, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            insert_query = """
-                INSERT INTO reviews (product_id, rating, text, review_date)
-                VALUES (%s, %s, %s, %s);
-            """
-            data_to_insert = []
-            for row in reader:
-                try:
-                    data_to_insert.append((
-                        row['product_id'], float(row['rating']),
-                        row.get('text'), row['date']
-                    ))
-                except (ValueError, KeyError) as e:
-                    print(f"Skipping row in reviews.csv due to error: {e} in row: {row}")
-                    continue
-            
-            if data_to_insert:
-                cur.executemany(insert_query, data_to_insert)
-                conn.commit()
-                print(f"Successfully populated 'reviews' table with {len(data_to_insert)} rows.")
+    _populate_table_from_csv(conn, 'reviews', REVIEWS_CSV_PATH, REVIEWS_COLUMN_MAP)
 
 def main():
     """Main function to set up database tables and populate them."""
     conn = None
     try:
         conn = get_db_connection()
-        print("Successfully connected to the database.")
+        logger.info("Successfully connected to the database.")
         
-        # Create tables in order of dependencies
-        create_table_if_not_exists(conn, 'products', CREATE_PRODUCTS_TABLE_SQL)
-        create_table_if_not_exists(conn, 'store_policies', CREATE_STORE_POLICIES_TABLE_SQL)
-        create_table_if_not_exists(conn, 'reviews', CREATE_REVIEWS_TABLE_SQL) # Depends on products
+        # Drop existing tables to ensure a fresh schema setup from init.sql
+        # Order: drop dependent tables first, or tables that are referenced by others last,
+        # or use CASCADE for all. Using CASCADE is generally robust.
+        logger.info("Dropping existing tables (if any) to ensure a fresh schema...")
+        with conn.cursor() as cur:
+            # 'reviews' depends on 'products'
+            if table_exists(cur, "reviews"):
+                cur.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE;").format(sql.Identifier("reviews")))
+                logger.info("Dropped table 'reviews'.")
+            
+            # 'store_policies' is independent in terms of FKs for this setup
+            if table_exists(cur, "store_policies"):
+                cur.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE;").format(sql.Identifier("store_policies")))
+                logger.info("Dropped table 'store_policies'.")
 
+            # 'products' is referenced by 'reviews'
+            if table_exists(cur, "products"):
+                cur.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE;").format(sql.Identifier("products")))
+                logger.info("Dropped table 'products'.")
+            conn.commit()
+
+        logger.info(f"Executing schema creation from {INIT_SQL_PATH}...")
+        execute_sql_from_file(conn, INIT_SQL_PATH)
+        logger.info("Schema created successfully from init.sql.")
+        
         # Populate tables in order of dependencies
         populate_products(conn)
         populate_store_policies(conn)
         populate_reviews(conn) # Depends on products
 
-        print("Database setup and population process completed.")
+        logger.info("Database setup and population process completed.")
 
     except psycopg2.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}", exc_info=True)
     except FileNotFoundError as e:
-        print(f"CSV file not found: {e}")
+        logger.error(f"File not found: {e}", exc_info=True)
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
     finally:
         if conn:
             conn.close()
-            print("Database connection closed.")
+            logger.info("Database connection closed.")
 
 if __name__ == '__main__':
     main()
