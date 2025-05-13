@@ -10,6 +10,12 @@ services:
       - db_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s # Give it some time to start up before checks begin
     networks:
       - smartshop_net
 
@@ -18,7 +24,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     depends_on:
-      - db
+      db:
+        condition: service_healthy # Wait for the db service to be healthy
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -31,6 +38,8 @@ services:
       - smartshop_net
     volumes:
       - ./backend:/app
+      - ./config:/app/config
+
 
   frontend:
     build:
@@ -49,17 +58,22 @@ services:
       context: . # The current directory has all the files
       dockerfile: ./database/Dockerfile_init # Create a new Dockerfile
     depends_on:
-      - db # Ensure the database is running first
+      db: # Ensure the database is healthy and ready
+        condition: service_healthy
     environment: # Pass DB credentials as environment variables
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
+      PYTHONPATH: /app
     networks:
       - smartshop_net
     volumes:
-      - ./scripts:/app/scripts # Mount the directory with the python script
+      - ./scripts:/app/scripts      # Mount the scripts directory
+      - ./config:/app/config
+      - ./database:/app/database
+      - ./data:/app/data      
     command: ["python", "/app/scripts/populate_db.py"]
 
 networks:

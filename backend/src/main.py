@@ -3,16 +3,13 @@ from typing import List, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import Session
-from backend.app.config import DATABASE_URL
-from backend.app.models import Product, ProductCreate, ProductDB, Review, ReviewCreate, ReviewDB, StorePolicy, StorePolicyCreate, StorePolicyDB, Base  # Import from models.py
+from config.config import DATABASE_URL
+from src.models import Product, ProductCreate, ProductDB, Review, ReviewCreate, ReviewDB, StorePolicy, StorePolicyCreate, StorePolicyDB, Base  # Import from models.py
 from datetime import datetime
 
 # --- SQLAlchemy Setup ---
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-#Base = declarative_base() # Removed
-Base.metadata.create_all(bind=engine) #creates the tables
-
 
 # --- FastAPI App ---
 app = FastAPI()
@@ -154,7 +151,7 @@ def update_policy(policy_id: int, policy: StorePolicyCreate, db: Session = Depen
 
 @app.delete("/policies/{policy_id}", response_model=StorePolicy)
 def delete_policy(policy_id: int, db: Session = Depends(get_db)):
-    db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, db.is_deleted == False).first()
+    db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
     db_policy.is_deleted = True #soft delete

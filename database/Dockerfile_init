@@ -5,4 +5,5 @@ RUN pip install psycopg2-binary python-dotenv
 
 # Copy the script
 COPY ./scripts /app/scripts
+COPY ./config /app/config
 WORKDIR /app

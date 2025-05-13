@@ -1,6 +1,6 @@
 from pydantic import BaseModel
-from typing import List, Optional
-from sqlalchemy import Column, Integer, String, Text, DECIMAL, TIMESTAMP, Boolean, ForeignKey
+from typing import List, Optional # Removed Text from here if it was only for Pydantic models
+from sqlalchemy import Column, Integer, String, Text, DECIMAL, TIMESTAMP, Boolean, ForeignKey # Text is still needed for SQLAlchemy DB models
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -13,7 +13,7 @@ class ProductBase(BaseModel):
     brand: Optional[str] = None
     category: Optional[str] = None
     price: float
-    description: Optional[Text] = None
+    description: Optional[str] = None  # Changed from Text to str
     stock: Optional[int] = None
     rating: Optional[float] = None
 
@@ -31,8 +31,8 @@ class Product(ProductBase):
 
 class ReviewBase(BaseModel):
     product_id: str
-    rating: int
-    text: Optional[Text] = None
+    rating: float
+    text: Optional[str] = None  # Changed from Text to str
     review_date: Optional[datetime]
 
 class ReviewCreate(ReviewBase):
@@ -49,8 +49,8 @@ class Review(ReviewBase):
 
 class StorePolicyBase(BaseModel):
     policy_type: str
-    description: str
-    conditions: Optional[Text] = None
+    description: str # This was already str, which is good
+    conditions: Optional[str] = None  # Changed from Text to str
     timeframe: Optional[int] = None
 
 class StorePolicyCreate(StorePolicyBase):
@@ -89,7 +89,7 @@ class ReviewDB(Base):
 
     review_id = Column(Integer, primary_key=True, index=True)
     product_id = Column(String(20), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False)
-    rating = Column(Integer, nullable=False)
+    rating = Column(DECIMAL(2, 1), nullable=False)
     text = Column(Text)
     review_date = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())

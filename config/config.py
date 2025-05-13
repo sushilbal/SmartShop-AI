@@ -8,11 +8,11 @@ load_dotenv()
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # --- Database Configuration ---
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_PORT = int(os.getenv('DB_PORT', '5432'))
-DB_NAME = os.getenv('DB_NAME', 'smartshop_db')
-DB_USER = os.getenv('DB_USER', 'myuser')
-DB_PASSWORD = os.getenv('DB_PASSWORD', 'mypassword')
+DB_HOST = os.getenv('POSTGRES_HOST', 'localhost')
+DB_PORT = int(os.getenv('POSTGRES_PORT', '5432'))
+DB_NAME = os.getenv('POSTGRES_DB', 'smartshop_db')
+DB_USER = os.getenv('POSTGRES_USER', 'myuser')
+DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'mypassword')
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
