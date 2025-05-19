@@ -4,6 +4,7 @@ import os
 import logging # Import the logging module
 import requests # For making HTTP requests to the embedding service
 from psycopg2 import sql # For safe SQL query construction
+import nltk # For sentence tokenization
 from qdrant_client import QdrantClient, models # For interacting with Qdrant
 
 from config.config import (
@@ -122,6 +123,18 @@ def get_embeddings(texts: list[str]) -> list[list[float]]:
         logger.error(f"Error calling embedding service at {EMBEDDING_SERVICE_URL}: {e}", exc_info=True)
         raise # Re-raise the exception
 
+def chunk_text_into_sentences(text: str) -> list[str]:
+    """Splits text into sentences using NLTK."""
+    if not text or not text.strip():
+        return []
+    try:
+        # NLTK_DATA environment variable should point to where 'punkt' is.
+        # The download is handled in Dockerfile_init.
+        return nltk.sent_tokenize(text)
+    except Exception as e:
+        logger.error(f"Error tokenizing text into sentences: {e}", exc_info=True)
+        return [text] # Fallback to using the whole text if tokenization fails
+
 def _populate_table_from_csv(conn, table_name, csv_path, column_map_details):
     """
     Generic function to populate a table from a CSV file using a defined column map.
@@ -175,96 +188,107 @@ def populate_qdrant_products(conn, qdrant_client):
     """Fetches products from PostgreSQL, gets embeddings, and populates Qdrant products collection."""
     collection_name = VECTOR_DB_COLLECTION_PRODUCTS
     
-    # Check if Qdrant collection is empty (optional, but prevents duplicates if script is re-run)
-    # Note: Checking emptiness in Qdrant is different from PostgreSQL.
-    # A simple check could be to count points, but that might be slow for large collections.
-    # For simplicity here, we'll assume if the script runs, we intend to populate Qdrant.
-    # A more robust approach might involve checking if specific product IDs already exist as points.
-    
     logger.info(f"Fetching products from PostgreSQL to populate Qdrant collection '{collection_name}'...")
-    products_data = []
+    all_product_rows = []
     with conn.cursor() as cur:
-        cur.execute("SELECT product_id, name, description FROM products WHERE is_deleted = FALSE;")
-        products_data = cur.fetchall()
+        # Fetch all necessary fields for payload and text to be chunked
+        cur.execute("""
+            SELECT product_id, name, brand, category, price, description, stock, rating, created_at, updated_at, is_deleted
+            FROM products WHERE is_deleted = FALSE;
+        """)
+        all_product_rows = cur.fetchall()
 
-    if not products_data:
+    if not all_product_rows:
         logger.info("No products found in PostgreSQL to embed. Skipping Qdrant population for products.")
         return
 
-    logger.info(f"Found {len(products_data)} products to embed. Getting embeddings and upserting to Qdrant...")
+    logger.info(f"Found {len(all_product_rows)} products. Chunking, embedding, and upserting to Qdrant...")
 
-    batch_size = 64 # Adjust based on embedding service capacity and memory
+    # Prepare all chunks and their metadata first
+    all_chunks_to_process = [] # Will store tuples of (point_id, text_for_embedding, payload)
+
+    for row in all_product_rows:
+        product_id, name, brand, category, price, description, stock, rating, created_at, updated_at, is_deleted = row
+        
+        # Construct the text for embedding by combining specified fields
+        embedding_parts = []
+        if name and name.strip():
+            embedding_parts.append(name.strip())
+        if brand and brand.strip():
+            embedding_parts.append(f"Brand: {brand.strip()}")
+        if category and category.strip():
+            embedding_parts.append(f"Category: {category.strip()}")
+        if description and description.strip():
+            embedding_parts.append(description.strip())
+        
+        text_to_chunk = ". ".join(filter(None, embedding_parts))
+        
+        chunks = chunk_text_into_sentences(text_to_chunk)
+        if not chunks: # If no text to chunk (e.g., product with no name/desc), skip
+            logger.debug(f"Product {product_id} has no text to chunk. Skipping.")
+            continue
+
+        for chunk_idx, chunk_text in enumerate(chunks):
+            point_id = f"{product_id}_chunk_{chunk_idx}"
+            payload = {
+                "original_product_id": product_id, # Link back to the parent product
+                "name": name,
+                "brand": brand,
+                "category": category,
+                "price": float(price) if price is not None else None,
+                "stock": stock,
+                "rating": float(rating) if rating is not None else None,
+                "chunk_text": chunk_text, # Store the actual chunk text
+                "chunk_index": chunk_idx,
+                "created_at": created_at.isoformat() if created_at else None,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "is_deleted": is_deleted
+            }
+            all_chunks_to_process.append((point_id, chunk_text, payload))
+
+    if not all_chunks_to_process:
+        logger.info("No text chunks generated from products. Skipping Qdrant population for products.")
+        return
+
+    logger.info(f"Generated {len(all_chunks_to_process)} text chunks from products.")
+
+    # Batch process for embedding and upserting
+    embedding_batch_size = 64 # How many texts to send to embedding service at once
     points_to_upsert = []
 
-    for i in range(0, len(products_data), batch_size):
-        batch_data = products_data[i:i+batch_size]
-        batch_ids = [row[0] for row in batch_data] # product_id
-        # Combine name and description for embedding
-        batch_texts = [f"{row[1]}. {row[2]}" if row[2] else row[1] for row in batch_data]
+    for i in range(0, len(all_chunks_to_process), embedding_batch_size):
+        batch_of_chunks = all_chunks_to_process[i : i + embedding_batch_size]
+        
+        current_point_ids = [item[0] for item in batch_of_chunks]
+        current_texts_to_embed = [item[1] for item in batch_of_chunks]
+        current_payloads = [item[2] for item in batch_of_chunks]
 
         try:
-            batch_embeddings = get_embeddings(batch_texts)
+            batch_embeddings = get_embeddings(current_texts_to_embed)
 
-            for j, product_id in enumerate(batch_ids):
-                # Create payload (metadata) for Qdrant point
-                # Include relevant data from PostgreSQL row, excluding the text used for embedding if preferred
-                # For simplicity, let's fetch the full row again or pass more data from the initial fetch
-                # A better approach would be to fetch all necessary columns initially.
-                # Let's refetch the full product data for the payload for now:
-                with conn.cursor() as cur_payload:
-                     cur_payload.execute("SELECT * FROM products WHERE product_id = %s;", (product_id,))
-                     full_product_row = cur_payload.fetchone()
-                     # Assuming column order matches init.sql: product_id, name, brand, category, price, description, stock, rating, created_at, updated_at, is_deleted
-                     payload = {
-                         "product_id": full_product_row[0],
-                         "name": full_product_row[1],
-                         "brand": full_product_row[2],
-                         "category": full_product_row[3],
-                         "price": float(full_product_row[4]), # Convert Decimal to float for JSON/Qdrant payload
-                         "stock": full_product_row[6],
-                         "rating": float(full_product_row[7]) if full_product_row[7] is not None else None,
-                         "created_at": full_product_row[8].isoformat() if full_product_row[8] else None,
-                         "updated_at": full_product_row[9].isoformat() if full_product_row[9] else None,
-                         "is_deleted": full_product_row[10]
-                         # Note: description is not included in payload here, but could be if needed
-                     }
-
+            for j, point_id_val in enumerate(current_point_ids):
                 points_to_upsert.append(
                     models.PointStruct(
-                        id=str(product_id), # Qdrant point IDs are typically integers or UUIDs, but strings are also supported in recent versions. Using string to match VARCHAR product_id.
+                        id=point_id_val, # e.g., "SP0001_chunk_0"
                         vector=batch_embeddings[j],
-                        payload=payload
+                        payload=current_payloads[j]
                     )
                 )
-
-            # Upsert the batch
+            
+            # Upsert this batch of points
             if points_to_upsert:
                 qdrant_client.upsert(
                     collection_name=collection_name,
                     wait=True, # Wait for the operation to complete
                     points=points_to_upsert
                 )
-                logger.info(f"Upserted batch of {len(points_to_upsert)} products to '{collection_name}'.")
+                logger.info(f"Upserted batch of {len(points_to_upsert)} product chunks to '{collection_name}'.")
                 points_to_upsert = [] # Clear batch
 
         except Exception as e:
-            logger.error(f"Error processing batch {i//batch_size + 1} for products: {e}", exc_info=True)
-            # Decide if you want to stop or continue on batch error
-            # For now, we'll log and continue, but you might want to raise or handle differently
+            logger.error(f"Error processing embedding/upsert batch for product chunks (starting index {i}): {e}", exc_info=True)
             points_to_upsert = [] # Clear batch to avoid trying to upsert problematic points again
             continue
-
-    # Upsert any remaining points in the last batch
-    if points_to_upsert:
-         try:
-            qdrant_client.upsert(
-                collection_name=collection_name,
-                wait=True,
-                points=points_to_upsert
-            )
-            logger.info(f"Upserted final batch of {len(points_to_upsert)} products to '{collection_name}'.")
-         except Exception as e:
-            logger.error(f"Error processing final batch for products: {e}", exc_info=True)
 
 def populate_store_policies(conn):
     """Populates the store_policies table from its CSV file if the table is empty."""
@@ -279,90 +303,175 @@ def populate_qdrant_reviews(conn, qdrant_client):
     collection_name = VECTOR_DB_COLLECTION_REVIEWS
     
     logger.info(f"Fetching reviews from PostgreSQL to populate Qdrant collection '{collection_name}'...")
-    reviews_data = []
+    all_review_rows = []
     with conn.cursor() as cur:
-        # Fetch review_id, product_id, and text
-        cur.execute("SELECT review_id, product_id, text FROM reviews WHERE is_deleted = FALSE;")
-        reviews_data = cur.fetchall()
+        # Fetch all necessary fields for payload and text to be chunked
+        cur.execute("""
+            SELECT review_id, product_id, rating, text, review_date, created_at, updated_at, is_deleted
+            FROM reviews WHERE is_deleted = FALSE;
+        """)
+        all_review_rows = cur.fetchall()
 
-    if not reviews_data:
+    if not all_review_rows:
         logger.info("No reviews found in PostgreSQL to embed. Skipping Qdrant population for reviews.")
         return
 
-    logger.info(f"Found {len(reviews_data)} reviews to embed. Getting embeddings and upserting to Qdrant...")
+    logger.info(f"Found {len(all_review_rows)} reviews. Chunking, embedding, and upserting to Qdrant...")
 
-    batch_size = 64 # Adjust based on embedding service capacity and memory
-    points_to_upsert = []
+    all_chunks_to_process = [] # Will store tuples of (point_id, text_for_embedding, payload)
 
-    for i in range(0, len(reviews_data), batch_size):
-        batch_data = reviews_data[i:i+batch_size]
-        batch_ids = [row[0] for row in batch_data] # review_id (SERIAL/int)
-        batch_texts = [row[2] if row[2] else "" for row in batch_data] # review text
-
-        # Skip empty texts if your embedding model doesn't handle them well
-        valid_batch_ids = [batch_ids[j] for j, text in enumerate(batch_texts) if text.strip()]
-        valid_batch_texts = [text for text in batch_texts if text.strip()]
+    for row in all_review_rows:
+        review_id, product_id, rating, text, review_date, created_at, updated_at, is_deleted = row
         
-        if not valid_batch_texts:
-            logger.debug(f"Skipping batch {i//batch_size + 1} for reviews: no valid text found.")
+        text_to_chunk = text if text else ""
+        chunks = chunk_text_into_sentences(text_to_chunk)
+        if not chunks:
+            logger.debug(f"Review {review_id} has no text to chunk. Skipping.")
             continue
 
+        for chunk_idx, chunk_text in enumerate(chunks):
+            point_id = f"{review_id}_chunk_{chunk_idx}" # String ID
+            payload = {
+                "original_review_id": review_id,
+                "product_id": product_id,
+                "rating": float(rating) if rating is not None else None,
+                "chunk_text": chunk_text,
+                "chunk_index": chunk_idx,
+                "review_date": review_date.isoformat() if review_date else None,
+                "created_at": created_at.isoformat() if created_at else None,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "is_deleted": is_deleted
+            }
+            all_chunks_to_process.append((point_id, chunk_text, payload))
+
+    if not all_chunks_to_process:
+        logger.info("No text chunks generated from reviews. Skipping Qdrant population for reviews.")
+        return
+
+    logger.info(f"Generated {len(all_chunks_to_process)} text chunks from reviews.")
+
+    embedding_batch_size = 64
+    points_to_upsert = []
+
+    for i in range(0, len(all_chunks_to_process), embedding_batch_size):
+        batch_of_chunks = all_chunks_to_process[i : i + embedding_batch_size]
+
+        current_point_ids = [item[0] for item in batch_of_chunks]
+        current_texts_to_embed = [item[1] for item in batch_of_chunks]
+        current_payloads = [item[2] for item in batch_of_chunks]
+
         try:
-            batch_embeddings = get_embeddings(valid_batch_texts)
+            batch_embeddings = get_embeddings(current_texts_to_embed)
 
-            valid_batch_data = [batch_data[j] for j, text in enumerate(batch_texts) if text.strip()]
-
-            for j, review_row in enumerate(valid_batch_data):
-                # Fetch full review data for payload
-                with conn.cursor() as cur_payload:
-                     cur_payload.execute("SELECT * FROM reviews WHERE review_id = %s;", (review_row[0],))
-                     full_review_row = cur_payload.fetchone()
-                     # Assuming column order matches init.sql: review_id, product_id, rating, text, review_date, created_at, updated_at, is_deleted
-                     payload = {
-                         "review_id": full_review_row[0],
-                         "product_id": full_review_row[1],
-                         "rating": float(full_review_row[2]),
-                         "review_date": full_review_row[4].isoformat() if full_review_row[4] else None,
-                         "created_at": full_review_row[5].isoformat() if full_review_row[5] else None,
-                         "updated_at": full_review_row[6].isoformat() if full_review_row[6] else None,
-                         "is_deleted": full_review_row[7]
-                         # Note: text is not included in payload here, but could be
-                     }
-
+            for j, point_id_val in enumerate(current_point_ids):
                 points_to_upsert.append(
                     models.PointStruct(
-                        id=review_row[0], # Use integer ID directly for SERIAL PK
+                        id=point_id_val, # e.g., "123_chunk_0"
                         vector=batch_embeddings[j],
-                        payload=payload
+                        payload=current_payloads[j]
                     )
                 )
-
-            # Upsert the batch
+            
             if points_to_upsert:
                 qdrant_client.upsert(
                     collection_name=collection_name,
                     wait=True,
                     points=points_to_upsert
                 )
-                logger.info(f"Upserted batch of {len(points_to_upsert)} reviews to '{collection_name}'.")
+                logger.info(f"Upserted batch of {len(points_to_upsert)} review chunks to '{collection_name}'.")
                 points_to_upsert = [] # Clear batch
 
         except Exception as e:
-            logger.error(f"Error processing batch {i//batch_size + 1} for reviews: {e}", exc_info=True)
+            logger.error(f"Error processing embedding/upsert batch for review chunks (starting index {i}): {e}", exc_info=True)
             points_to_upsert = [] # Clear batch
             continue
 
-    # Upsert any remaining points in the last batch
-    if points_to_upsert:
-         try:
-            qdrant_client.upsert(
-                collection_name=collection_name,
-                wait=True,
-                points=points_to_upsert
-            )
-            logger.info(f"Upserted final batch of {len(points_to_upsert)} reviews to '{collection_name}'.")
-         except Exception as e:
-            logger.error(f"Error processing final batch for reviews: {e}", exc_info=True)
+def populate_qdrant_policies(conn, qdrant_client):
+    """Fetches store policies from PostgreSQL, gets embeddings, and populates Qdrant policies collection."""
+    collection_name = VECTOR_DB_COLLECTION_POLICIES
+    
+    logger.info(f"Fetching store policies from PostgreSQL to populate Qdrant collection '{collection_name}'...")
+    all_policy_rows = []
+    with conn.cursor() as cur:
+        # Fetch all necessary fields for payload and text to be chunked
+        cur.execute("""
+            SELECT policy_id, policy_type, description, conditions, timeframe, created_at, updated_at, is_deleted
+            FROM store_policies WHERE is_deleted = FALSE;
+        """)
+        all_policy_rows = cur.fetchall()
+
+    if not all_policy_rows:
+        logger.info("No store policies found in PostgreSQL to embed. Skipping Qdrant population for policies.")
+        return
+
+    logger.info(f"Found {len(all_policy_rows)} store policies. Chunking, embedding, and upserting to Qdrant...")
+
+    all_chunks_to_process = [] # Will store tuples of (point_id, text_for_embedding, payload)
+
+    for row in all_policy_rows:
+        policy_id, policy_type, description, conditions, timeframe, created_at, updated_at, is_deleted = row
+        
+        # Construct the text for embedding
+        embedding_parts = []
+        if policy_type and policy_type.strip():
+            embedding_parts.append(f"Policy Type: {policy_type.strip()}")
+        if description and description.strip():
+            embedding_parts.append(description.strip())
+        # Optionally, include conditions if they are textual and relevant for semantic search
+        # if conditions and conditions.strip():
+        #     embedding_parts.append(f"Conditions: {conditions.strip()}")
+            
+        text_to_chunk = ". ".join(filter(None, embedding_parts))
+        
+        chunks = chunk_text_into_sentences(text_to_chunk)
+        if not chunks:
+            logger.debug(f"Policy {policy_id} has no text to chunk. Skipping.")
+            continue
+
+        for chunk_idx, chunk_text in enumerate(chunks):
+            point_id = f"{policy_id}_chunk_{chunk_idx}" # String ID
+            payload = {
+                "original_policy_id": policy_id,
+                "policy_type": policy_type,
+                "conditions": conditions, # Store original conditions text
+                "timeframe": timeframe,
+                "chunk_text": chunk_text,
+                "chunk_index": chunk_idx,
+                "created_at": created_at.isoformat() if created_at else None,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "is_deleted": is_deleted
+            }
+            all_chunks_to_process.append((point_id, chunk_text, payload))
+
+    if not all_chunks_to_process:
+        logger.info("No text chunks generated from store policies. Skipping Qdrant population for policies.")
+        return
+
+    logger.info(f"Generated {len(all_chunks_to_process)} text chunks from store policies.")
+
+    embedding_batch_size = 64
+    points_to_upsert = []
+
+    for i in range(0, len(all_chunks_to_process), embedding_batch_size):
+        batch_of_chunks = all_chunks_to_process[i : i + embedding_batch_size]
+        current_point_ids = [item[0] for item in batch_of_chunks]
+        current_texts_to_embed = [item[1] for item in batch_of_chunks]
+        current_payloads = [item[2] for item in batch_of_chunks]
+
+        try:
+            batch_embeddings = get_embeddings(current_texts_to_embed)
+            for j, point_id_val in enumerate(current_point_ids):
+                points_to_upsert.append(
+                    models.PointStruct(id=point_id_val, vector=batch_embeddings[j], payload=current_payloads[j])
+                )
+            if points_to_upsert:
+                qdrant_client.upsert(collection_name=collection_name, wait=True, points=points_to_upsert)
+                logger.info(f"Upserted batch of {len(points_to_upsert)} policy chunks to '{collection_name}'.")
+                points_to_upsert = []
+        except Exception as e:
+            logger.error(f"Error processing embedding/upsert batch for policy chunks (starting index {i}): {e}", exc_info=True)
+            points_to_upsert = []
+            continue
 
 
 def main():
@@ -410,7 +519,7 @@ def main():
         # Fetch data from PostgreSQL, get embeddings, and upsert to Qdrant
         populate_qdrant_products(conn, qdrant_client)
         populate_qdrant_reviews(conn, qdrant_client)
-        # populate_qdrant_policies(conn, qdrant_client) # Add this when you have policy text to embed
+        populate_qdrant_policies(conn, qdrant_client)
 
         logger.info("Database setup and population process completed.")
 
