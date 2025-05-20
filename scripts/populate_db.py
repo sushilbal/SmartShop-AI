@@ -2,9 +2,9 @@ import psycopg2
 import csv
 import os
 import logging # Import the logging module
-import requests # For making HTTP requests to the embedding service
 from psycopg2 import sql # For safe SQL query construction
-import nltk # For sentence tokenization
+from sentence_transformers import SentenceTransformer # For generating embeddings
+import uuid # For generating UUIDs for Qdrant point IDs
 from qdrant_client import QdrantClient, models # For interacting with Qdrant
 
 from config.config import (
@@ -12,7 +12,13 @@ from config.config import (
     PRODUCTS_CSV_PATH,
     REVIEWS_CSV_PATH,
     STORE_POLICIES_CSV_PATH,
-    INIT_SQL_PATH
+    INIT_SQL_PATH,
+    get_embedding_model,        # Import the model loading function
+    VECTOR_DB_HOST,             # Qdrant config
+    VECTOR_DB_PORT,
+    VECTOR_DB_COLLECTION_PRODUCTS,
+    VECTOR_DB_COLLECTION_REVIEWS,
+    VECTOR_DB_COLLECTION_POLICIES
 )
 
 from config.column_mappings import (
@@ -21,18 +27,10 @@ from config.column_mappings import (
     STORE_POLICIES_COLUMN_MAP
 )
 
-from config.config import ( # Import Qdrant and Embedding Service config
-    EMBEDDING_SERVICE_URL,
-    VECTOR_DB_HOST,
-    VECTOR_DB_PORT,
-    VECTOR_DB_COLLECTION_PRODUCTS,
-    VECTOR_DB_COLLECTION_REVIEWS,
-    VECTOR_DB_COLLECTION_POLICIES
-)
-
 # --- Logger Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 def get_db_connection():
     """Establishes a connection to the PostgreSQL database using DATABASE_URL from config."""
@@ -82,8 +80,10 @@ def get_qdrant_client():
 def create_qdrant_collections(client):
     """Creates Qdrant collections if they don't already exist."""
     # Define vector parameters (size should match your embedding model output)
-    # all-MiniLM-L6-v2 outputs 384-dimensional vectors
-    vector_params = models.VectorParams(size=384, distance=models.Distance.COSINE)
+    # Get the embedding model instance from the centralized config function
+    model_instance = get_embedding_model()
+    embedding_dim = model_instance.get_sentence_embedding_dimension()
+    vector_params = models.VectorParams(size=embedding_dim, distance=models.Distance.COSINE)
 
     collections_to_create = {
         VECTOR_DB_COLLECTION_PRODUCTS: vector_params,
@@ -111,29 +111,30 @@ def create_qdrant_collections(client):
             logger.info(f"Collection '{collection_name}' already exists. Skipping creation.")
 
 def get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Sends text to the embedding service and returns embeddings."""
+    """Generates embeddings for a list of texts using the local SentenceTransformer model."""
+    if not texts:
+        return []
     try:
-        response = requests.post(EMBEDDING_SERVICE_URL, json={"texts": texts})
-        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-        embeddings = response.json().get("embeddings")
-        if not embeddings or len(embeddings) != len(texts):
-             raise ValueError("Embedding service returned unexpected response format or number of embeddings.")
-        return embeddings
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error calling embedding service at {EMBEDDING_SERVICE_URL}: {e}", exc_info=True)
+        # Get the embedding model instance from the centralized config function
+        model_instance = get_embedding_model()
+        embeddings_np = model_instance.encode(texts, show_progress_bar=False)
+        return embeddings_np.tolist()
+    except Exception as e:
+        logger.error(f"Error generating embeddings: {e}", exc_info=True)
         raise # Re-raise the exception
 
 def chunk_text_into_sentences(text: str) -> list[str]:
-    """Splits text into sentences using NLTK."""
+    """Splits text into sentences using pysbd."""
+    # Import pysbd locally or move its initialization if needed globally
+    import pysbd
     if not text or not text.strip():
         return []
     try:
-        # NLTK_DATA environment variable should point to where 'punkt' is.
-        # The download is handled in Dockerfile_init.
-        return nltk.sent_tokenize(text)
-    except Exception as e:
-        logger.error(f"Error tokenizing text into sentences: {e}", exc_info=True)
-        return [text] # Fallback to using the whole text if tokenization fails
+        seg = pysbd.Segmenter(language="en", clean=False) # Initialize Segmenter here
+        return seg.segment(text)
+    except Exception as e: # Keep fallback
+        logger.error(f"Error tokenizing text into sentences with pysbd: {e}", exc_info=True)
+        return [text] # Fallback to using the whole text as a single chunk
 
 def _populate_table_from_csv(conn, table_name, csv_path, column_map_details):
     """
@@ -229,7 +230,8 @@ def populate_qdrant_products(conn, qdrant_client):
             continue
 
         for chunk_idx, chunk_text in enumerate(chunks):
-            point_id = f"{product_id}_chunk_{chunk_idx}"
+            # point_id = f"{product_id}_chunk_{chunk_idx}" # Old string ID
+            point_id = str(uuid.uuid4()) # New UUID for each chunk
             payload = {
                 "original_product_id": product_id, # Link back to the parent product
                 "name": name,
@@ -330,7 +332,8 @@ def populate_qdrant_reviews(conn, qdrant_client):
             continue
 
         for chunk_idx, chunk_text in enumerate(chunks):
-            point_id = f"{review_id}_chunk_{chunk_idx}" # String ID
+            # point_id = f"{review_id}_chunk_{chunk_idx}" # Old string ID
+            point_id = str(uuid.uuid4()) # New UUID for each chunk
             payload = {
                 "original_review_id": review_id,
                 "product_id": product_id,
@@ -429,7 +432,8 @@ def populate_qdrant_policies(conn, qdrant_client):
             continue
 
         for chunk_idx, chunk_text in enumerate(chunks):
-            point_id = f"{policy_id}_chunk_{chunk_idx}" # String ID
+            # point_id = f"{policy_id}_chunk_{chunk_idx}" # Old string ID
+            point_id = str(uuid.uuid4()) # New UUID for each chunk
             payload = {
                 "original_policy_id": policy_id,
                 "policy_type": policy_type,

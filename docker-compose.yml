@@ -30,6 +30,8 @@ services:
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-all-MiniLM-L6-v2}
     networks:
       - smartshop_net
+    volumes:
+      - embedding_model_cache:/app/model_cache # Mount shared cache
     # Add healthcheck for embedding_model if you implement one in its FastAPI app
 
   vector_db: # <--- NEW QDRANT SERVICE
@@ -42,13 +44,12 @@ services:
       - qdrant_storage:/qdrant/storage # To persist Qdrant data
     networks:
       - smartshop_net
-    # You can add healthcheck for Qdrant if needed
-    # healthcheck:
-    #   test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"] # Qdrant < v1.2
-    #   test: ["CMD-SHELL", "curl -f http://localhost:6333/readyz || exit 1"] # Qdrant >= v1.2
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 5
+    healthcheck: # Qdrant >= v1.2 uses /readyz
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s # Give Qdrant time to start up before checking health
+      retries: 5
 
   
   db_init:
@@ -58,8 +59,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      embedding_model:
-        condition: service_started # or service_healthy
       vector_db: # <--- Add dependency on vector_db
         condition: service_started # or service_healthy
     environment:
@@ -69,17 +68,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB} # Gets value from root .env's POSTGRES_DB
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # Gets value from root .env's POSTGRES_PASSWORD
-      EMBEDDING_MODEL_URL: http://embedding_model:8001/embed
+      # Allow overriding the sentence transformer model used by populate_db.py
+      SENTENCE_TRANSFORMER_MODEL: ${EMBEDDING_MODEL_NAME} # If not set in .env, config.py's default will be used
       VECTOR_DB_HOST: vector_db # <--- Hostname for Qdrant
       VECTOR_DB_PORT: ${VECTOR_DB_PORT}    # <--- gRPC port for Qdrant
       PYTHONPATH: /app
-      NLTK_DATA: /usr/local/share/nltk_data # Path where NLTK data is downloaded in Dockerfile_init
     networks:
       - smartshop_net
     volumes:
       - ./scripts:/app/scripts
       - ./config:/app/config
       - ./database:/app/database # For init.sql
+      - embedding_model_cache:/app/model_cache # Mount shared cache
       - ./data:/app/data
     command: ["python", "/app/scripts/populate_db.py"]
 
@@ -131,5 +131,5 @@ networks:
 
 volumes:
   db_data:
-  qdrant_storage: # <--- Define named volume for Qdrant
-  # embedding_model_cache: # If you used a named volume for embedding model cache
+  qdrant_storage:
+  embedding_model_cache: # Define named volume for embedding model cache

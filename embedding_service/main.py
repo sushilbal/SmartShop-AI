@@ -4,9 +4,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 from typing import List, Optional
+import torch # Still needed for HealthResponse device info
 import logging
-import torch
-import os
+
+# Import centralized config and model loading function
+from config.config import get_embedding_model, SENTENCE_TRANSFORMER_MODEL, DEVICE
 
 # --- Configuration ---
 # Configure logging
@@ -16,13 +18,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Model Configuration
-# You can make the model name an environment variable if you want to switch easily
-DEFAULT_MODEL_NAME = 'all-MiniLM-L6-v2'
-MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', DEFAULT_MODEL_NAME)
-# Optional: Define a cache folder for sentence-transformers models within the container
-MODEL_CACHE_FOLDER = '/app/model_cache' # Ensure this path is writable
-
 # --- FastAPI Application Setup ---
 app = FastAPI(
     title="SmartShop AI Embedding Service",
@@ -31,7 +26,6 @@ app = FastAPI(
 )
 
 # --- Global Variables ---
-model: Optional[SentenceTransformer] = None
 device: Optional[str] = None
 
 # --- Pydantic Models ---
@@ -59,15 +53,14 @@ async def startup_event():
     Load the embedding model on application startup.
     """
     global model, device, MODEL_NAME
+    # The model loading is now handled by the centralized config function
     try:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        logger.info(f"Attempting to load embedding model '{MODEL_NAME}' on device '{device}'...")
-
-        model = SentenceTransformer(MODEL_NAME, device=device, cache_folder=MODEL_CACHE_FOLDER)
-
-        logger.info(f"Successfully loaded embedding model: '{MODEL_NAME}' on device '{device}'.")
+        # Call the centralized function to get the model instance
+        model = get_embedding_model()
+        device = DEVICE # Get the determined device from config
+        logger.info(f"Embedding model '{SENTENCE_TRANSFORMER_MODEL}' loaded via config on device '{DEVICE}'.")
     except Exception as e:
-        logger.error(f"Fatal error loading embedding model '{MODEL_NAME}': {e}", exc_info=True)
+        logger.error(f"Fatal error loading embedding model via config: {e}", exc_info=True)
         model = None # Mark model as not loaded
 
 @app.on_event("shutdown")
@@ -91,7 +84,7 @@ async def get_embeddings(data: TextListInput):
     """
     Generates embeddings for a list of input texts.
     """
-    global model, MODEL_NAME
+    global model, SENTENCE_TRANSFORMER_MODEL # Use the model name from config
     if model is None:
         logger.error("Embedding model is not available. Startup might have failed.")
         raise HTTPException(status_code=503, detail="Embedding model not available or failed to load.")
@@ -99,7 +92,7 @@ async def get_embeddings(data: TextListInput):
     if not data.texts:
         return EmbeddingResponse(embeddings=[], model_name=MODEL_NAME)
 
-    # Filter out any non-string or empty/whitespace-only strings to avoid errors with model.encode
+    # Filter out any non-string or empty/whitespace-only strings
     valid_texts_to_embed = [text for text in data.texts if isinstance(text, str) and text.strip()]
 
     if not valid_texts_to_embed:
@@ -115,7 +108,7 @@ async def get_embeddings(data: TextListInput):
         # For very long texts or large batches, this can be time-consuming.
         # Consider background tasks or async execution for production if latency is an issue.
         embedding_vectors = model.encode(valid_texts_to_embed, show_progress_bar=False)
-        
+
         # The model.encode returns a list of numpy arrays or a single numpy array.
         # We need to convert them to a list of lists of floats for JSON serialization.
         embeddings_as_lists = [emb.tolist() for emb in embedding_vectors]
@@ -133,10 +126,11 @@ async def health_check():
     Health check endpoint to verify if the service and model are ready.
     """
     global model, MODEL_NAME, device
+    # Use the model name and device from config
     if model:
-        return HealthResponse(status="healthy", model_name=MODEL_NAME, device=device)
+        return HealthResponse(status="healthy", model_name=SENTENCE_TRANSFORMER_MODEL, device=DEVICE)
     else:
-        return HealthResponse(status="unhealthy", reason="Embedding model not loaded or failed to load.", model_name=MODEL_NAME, device=device)
+        return HealthResponse(status="unhealthy", reason="Embedding model not loaded or failed to load.", model_name=SENTENCE_TRANSFORMER_MODEL, device=DEVICE)
 
 # To run this locally for testing (outside Docker, if needed):
 # if __name__ == "__main__":

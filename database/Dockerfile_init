@@ -5,8 +5,14 @@ WORKDIR /app
 # Copy the requirements file for the scripts
 COPY ./scripts/requirements.txt /app/scripts/requirements.txt
 
-# Install dependencies
-RUN pip install --no-cache-dir -r /app/scripts/requirements.txt
+# Install Python dependencies from requirements.txt and add sentence-transformers.
+# NLTK-specific configurations, data downloads, and the 'unzip' utility (previously for NLTK) have been removed.
+RUN pip install --no-cache-dir -r /app/scripts/requirements.txt sentence-transformers
 
-# Download NLTK data for sentence tokenization
-RUN python -m nltk.downloader -d /usr/local/share/nltk_data punkt
+# Note: If 'sentence-transformers' or other packages in your requirements.txt
+# require system-level C libraries not present in the base 'python:3.11-slim-bookworm' image,
+# you might need to add an 'apt-get install' step. For example:
+# RUN apt-get update && \
+#     apt-get install -y --no-install-recommends build-essential <other-needed-libs> && \
+#     rm -rf /var/lib/apt/lists/* && \
+#     pip install --no-cache-dir -r /app/scripts/requirements.txt sentence-transformers

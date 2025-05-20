@@ -125,6 +125,67 @@ The `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/config/config.py
     ```
     Look for "Database setup and population process completed." The `db_init` container will exit with code 0 upon successful completion.
 
+ your `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/.env` file).
+
+3.  **Inspect the data:**
+    *   List tables:
+        ```sql
+        \dt
+        ```
+        You should see `products`, `reviews`, and `store_policies`.
+    *   Check row counts:
+        ```sql
+        SELECT COUNT(*) FROM products;
+        SELECT COUNT(*) FROM reviews;
+        SELECT COUNT(*) FROM store_policies;
+        ```
+    *   View sample data:
+        ```sql
+        SELECT * FROM products LIMIT 5;
+        ```
+
+4.  **Exit `psql` and the container:**
+    *   Type `\q` to exit `psql`.
+    *   Type `exit` to leave the container shell.
+
+### 2. Validating Vector Database (Qdrant)
+
+Qdrant provides a Web UI and a REST API for inspection.
+ 
+1.  **Using the Qdrant Web UI:**
+    *   Open your browser and navigate to `http://localhost:6333/dashboard`.
+    *   You should see your collections listed. Based on your `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/.env` file, these are `my_custom_products`, `my_custom_reviews`, and `my_custom_policies`.
+    *   Click on a collection to see its details, including the number of points (vectors).
+
+2.  **Using `curl` (Command Line):**
+    *   List all collections:
+        ```bash
+        curl http://localhost:6333/collections
+        "collections": [
+            {
+                "name": "policies_collection"
+            },
+            {
+                "name": "products_collection"
+            },
+            {
+                "name": "reviews_collection"
+            }
+        ]
+        ```
+    *   Get info about a specific collection (e.g., `my_custom_products`):
+        ```bash
+        curl http://localhost:6333/collections/products_collection
+        ```
+        Look for `points_count` in the JSON response.
+    *   Scroll through a few points from a collection (e.g., `my_custom_products`):
+        ```bash
+        curl -X POST -H "Content-Type: application/json" \
+             -d '{"limit": 5, "with_payload": true, "with_vectors": false}' \
+             http://localhost:6333/collections/products_collection/points/scroll
+        ```
+
+If data is missing or counts are incorrect, check the logs of the `db_init` service: `docker-compose logs db_init`.
 ## Accessing Services
 
 *   **Backend API (FastAPI)**:
