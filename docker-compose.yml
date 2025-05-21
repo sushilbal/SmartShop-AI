@@ -102,8 +102,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # For other services
-      EMBEDDING_MODEL_URL: ${EMBEDDING_SERVICE_URL}
       VECTOR_DB_HOST: vector_db # <--- Hostname for Qdrant
       VECTOR_DB_PORT: ${VECTOR_DB_PORT}  # <--- gRPC port for Qdrant
       PYTHONPATH: /app # Assuming backend code is in /app/src and this helps imports

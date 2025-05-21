@@ -1,0 +1,11 @@
+pytest
+requests-mock
+httpx
+fastapi
+uvicorn[standard]
+SQLAlchemy
+psycopg2-binary
+torch
+sentence-transformers
+python-dotenv
+qdrant_client

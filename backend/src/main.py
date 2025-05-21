@@ -3,9 +3,18 @@ from typing import List, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import Session
-from config.config import DATABASE_URL
+from config.config import DATABASE_URL, get_qdrant_client
 from src.models import Product, ProductCreate, ProductDB, Review, ReviewCreate, ReviewDB, StorePolicy, StorePolicyCreate, StorePolicyDB, Base  # Import from models.py
 from datetime import datetime
+import logging # For logging Qdrant sync errors
+
+# Import Qdrant sync functions
+from src.embedding_sync import (
+    update_product_in_qdrant, delete_product_from_qdrant,
+    update_review_in_qdrant, delete_review_from_qdrant,
+    update_policy_in_qdrant, delete_policy_from_qdrant
+)
+from sqlalchemy.exc import IntegrityError
 
 # --- SQLAlchemy Setup ---
 engine = create_engine(DATABASE_URL)
@@ -13,7 +22,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # --- FastAPI App ---
 app = FastAPI()
-
+logger = logging.getLogger(__name__)
 
 # --- Dependency ---
 def get_db():
@@ -23,6 +32,13 @@ def get_db():
     finally:
         db.close()
 
+def get_qdrant_db_client(): # Renamed to avoid conflict if FastAPI uses 'client'
+    try:
+        return get_qdrant_client()
+    except Exception as e:
+        logger.error(f"Failed to get Qdrant client for API request: {e}")
+        # Depending on strictness, you might raise HTTPException here
+        return None
 # --- API Endpoints ---
 
 # --- Product Endpoints ---
@@ -39,15 +55,26 @@ def read_product(product_id: str, db: Session = Depends(get_db)):
     return product
 
 @app.post("/products/", response_model=Product)
-def create_product(product: ProductCreate, db: Session = Depends(get_db)):
-    db_product = ProductDB(**product.dict())
-    db.add(db_product)
-    db.commit()
-    db.refresh(db_product)
+def create_product(product: ProductCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+    try:
+        db_product = ProductDB(**product.dict())
+        db.add(db_product)
+        db.commit()
+        db.refresh(db_product)
+    except IntegrityError: # Catch duplicate key errors or other unique constraint violations
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Product with ID '{product.product_id}' already exists or violates a unique constraint.")
+    # Sync with Qdrant
+    if q_client:
+        try:
+            update_product_in_qdrant(q_client, db_product.product_id, product.dict())
+        except Exception as e:
+            logger.error(f"Failed to sync new product {db_product.product_id} to Qdrant: {e}", exc_info=True)
+    # Else: Qdrant client not available, logged in get_qdrant_db_client
     return db_product
 
 @app.put("/products/{product_id}", response_model=Product)
-def update_product(product_id: str, product: ProductCreate, db: Session = Depends(get_db)):
+def update_product(product_id: str, product: ProductCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     db_product = db.query(ProductDB).filter(ProductDB.product_id == product_id, ProductDB.is_deleted == False).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -55,16 +82,28 @@ def update_product(product_id: str, product: ProductCreate, db: Session = Depend
         setattr(db_product, key, value)
     db.commit()
     db.refresh(db_product)
+    # Sync with Qdrant
+    if q_client:
+        try:
+            update_product_in_qdrant(q_client, product_id, product.dict()) # Pass original product_id
+        except Exception as e:
+            logger.error(f"Failed to sync updated product {product_id} to Qdrant: {e}", exc_info=True)
     return db_product
 
 @app.delete("/products/{product_id}", response_model=Product)
-def delete_product(product_id: str, db: Session = Depends(get_db)):
+def delete_product(product_id: str, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     db_product = db.query(ProductDB).filter(ProductDB.product_id == product_id, ProductDB.is_deleted == False).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
     db_product.is_deleted = True #soft delete
     db.commit()
     db.refresh(db_product)
+    # Sync with Qdrant (delete)
+    if q_client:
+        try:
+            delete_product_from_qdrant(q_client, product_id)
+        except Exception as e:
+            logger.error(f"Failed to delete product {product_id} from Qdrant: {e}", exc_info=True)
     return db_product
 
 # --- Review Endpoints ---
@@ -84,7 +123,7 @@ def read_review(review_id: int, db: Session = Depends(get_db)):
     return review
 
 @app.post("/reviews/", response_model=Review)
-def create_review(review: ReviewCreate, db: Session = Depends(get_db)):
+def create_review(review: ReviewCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     # Check if the product exists
     product = db.query(ProductDB).filter(ProductDB.product_id == review.product_id, ProductDB.is_deleted == False).first()
     if not product:
@@ -94,27 +133,52 @@ def create_review(review: ReviewCreate, db: Session = Depends(get_db)):
     db.add(db_review)
     db.commit()
     db.refresh(db_review)
+    # Sync with Qdrant
+    if q_client:
+        try:
+            # Pass db_review.review_id as it's the generated ID
+            update_review_in_qdrant(q_client, db_review.review_id, review.dict())
+        except Exception as e:
+            logger.error(f"Failed to sync new review {db_review.review_id} to Qdrant: {e}", exc_info=True)
     return db_review
 
 @app.put("/reviews/{review_id}", response_model=Review)
-def update_review(review_id: int, review: ReviewCreate, db: Session = Depends(get_db)):
+def update_review(review_id: int, review: ReviewCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     db_review = db.query(ReviewDB).filter(ReviewDB.review_id == review_id, ReviewDB.is_deleted == False).first()
     if not db_review:
         raise HTTPException(status_code=404, detail="Review not found")
+    # Check if the product exists if product_id is being updated
+    if review.product_id != db_review.product_id:
+        product = db.query(ProductDB).filter(ProductDB.product_id == review.product_id, ProductDB.is_deleted == False).first()
+        if not product:
+            raise HTTPException(status_code=400, detail="New product_id for review not found")
+            
     for key, value in review.dict().items():
         setattr(db_review, key, value)
     db.commit()
     db.refresh(db_review)
+    # Sync with Qdrant
+    if q_client:
+        try:
+            update_review_in_qdrant(q_client, review_id, review.dict())
+        except Exception as e:
+            logger.error(f"Failed to sync updated review {review_id} to Qdrant: {e}", exc_info=True)
     return db_review
 
 @app.delete("/reviews/{review_id}", response_model=Review)
-def delete_review(review_id: int, db: Session = Depends(get_db)):
+def delete_review(review_id: int, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     db_review = db.query(ReviewDB).filter(ReviewDB.review_id == review_id, ReviewDB.is_deleted == False).first()
     if not db_review:
         raise HTTPException(status_code=404, detail="Review not found")
     db_review.is_deleted = True #soft delete
     db.commit()
     db.refresh(db_review)
+    # Sync with Qdrant (delete)
+    if q_client:
+        try:
+            delete_review_from_qdrant(q_client, review_id)
+        except Exception as e:
+            logger.error(f"Failed to delete review {review_id} from Qdrant: {e}", exc_info=True)
     return db_review
 
 # --- Store Policy Endpoints ---
@@ -131,15 +195,22 @@ def read_policy(policy_id: int, db: Session = Depends(get_db)):
     return policy
 
 @app.post("/policies/", response_model=StorePolicy)
-def create_policy(policy: StorePolicyCreate, db: Session = Depends(get_db)):
+def create_policy(policy: StorePolicyCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     db_policy = StorePolicyDB(**policy.dict())
     db.add(db_policy)
     db.commit()
     db.refresh(db_policy)
+    # Sync with Qdrant
+    if q_client:
+        try:
+            # Pass db_policy.policy_id as it's the generated ID
+            update_policy_in_qdrant(q_client, db_policy.policy_id, policy.dict())
+        except Exception as e:
+            logger.error(f"Failed to sync new policy {db_policy.policy_id} to Qdrant: {e}", exc_info=True)
     return db_policy
 
 @app.put("/policies/{policy_id}", response_model=StorePolicy)
-def update_policy(policy_id: int, policy: StorePolicyCreate, db: Session = Depends(get_db)):
+def update_policy(policy_id: int, policy: StorePolicyCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
@@ -147,14 +218,26 @@ def update_policy(policy_id: int, policy: StorePolicyCreate, db: Session = Depen
         setattr(db_policy, key, value)
     db.commit()
     db.refresh(db_policy)
+    # Sync with Qdrant
+    if q_client:
+        try:
+            update_policy_in_qdrant(q_client, policy_id, policy.dict())
+        except Exception as e:
+            logger.error(f"Failed to sync updated policy {policy_id} to Qdrant: {e}", exc_info=True)
     return db_policy
 
 @app.delete("/policies/{policy_id}", response_model=StorePolicy)
-def delete_policy(policy_id: int, db: Session = Depends(get_db)):
+def delete_policy(policy_id: int, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
     db_policy.is_deleted = True #soft delete
     db.commit()
     db.refresh(db_policy)
+    # Sync with Qdrant (delete)
+    if q_client:
+        try:
+            delete_policy_from_qdrant(q_client, policy_id)
+        except Exception as e:
+            logger.error(f"Failed to delete policy {policy_id} from Qdrant: {e}", exc_info=True)
     return db_policy

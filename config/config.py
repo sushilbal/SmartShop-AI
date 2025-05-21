@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 
 import torch # For device detection
 from sentence_transformers import SentenceTransformer # For loading the model
+from qdrant_client import QdrantClient # For Qdrant client
 # --- Project Root Configuration ---
 # Assumes this config.py file is in <PROJECT_ROOT>/config/
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,11 +76,42 @@ def get_embedding_model() -> SentenceTransformer:
     """Loads and caches the SentenceTransformer model."""
     global _cached_embedding_model
     if _cached_embedding_model is None:
-        # Use print for early logging before standard logging might be fully configured
-        print(f"Loading SentenceTransformer model '{SENTENCE_TRANSFORMER_MODEL}' on device '{DEVICE}' with cache '{MODEL_CACHE_FOLDER}'...")
-        _cached_embedding_model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL, device=DEVICE, cache_folder=MODEL_CACHE_FOLDER)
-        print("SentenceTransformer model loaded.")
+        try:
+            # Use print for early logging before standard logging might be fully configured
+             # For local testing, allow SentenceTransformer to use its default cache path
+            # The MODEL_CACHE_FOLDER is primarily for the Docker environment where it's volume-mounted.
+            # You could use an environment variable to decide whether to set cache_folder.
+            # For simplicity here, we'll only set it if a specific env var indicates Docker.
+            # A more robust way might be to check if MODEL_CACHE_FOLDER is writable or exists.
+            cache_dir_to_use = MODEL_CACHE_FOLDER if os.getenv("RUNNING_IN_DOCKER") else None # Example check
+            print(f"CONFIG.PY: Attempting to load SentenceTransformer model '{SENTENCE_TRANSFORMER_MODEL}' on device '{DEVICE}'. Cache: {cache_dir_to_use or 'default'}")
+            _cached_embedding_model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL, device=DEVICE, cache_folder=cache_dir_to_use)
+            print("CONFIG.PY: SentenceTransformer model loaded successfully.")
+        except Exception as e:
+            print(f"CONFIG.PY: CRITICAL ERROR loading SentenceTransformer model '{SENTENCE_TRANSFORMER_MODEL}': {e}")
+            # Re-raise the exception. It will be caught by get_embeddings_for_texts in embedding_sync.py
+            raise
     return _cached_embedding_model
+
+# --- Qdrant Client Configuration and Loading ---
+_cached_qdrant_client = None
+
+def get_qdrant_client() -> QdrantClient:
+    """Initializes and returns a Qdrant client, caching the instance."""
+    global _cached_qdrant_client
+    if _cached_qdrant_client is None:
+        # VECTOR_DB_HOST and VECTOR_DB_PORT are validated below,
+        # so they should be available here.
+        try:
+            # Use print for early logging before standard logging might be fully configured
+            print(f"Initializing Qdrant client for host {VECTOR_DB_HOST}:{VECTOR_DB_PORT}...")
+            _cached_qdrant_client = QdrantClient(host=VECTOR_DB_HOST, port=VECTOR_DB_PORT)
+            _cached_qdrant_client.get_collections() # A simple way to test the connection
+            print("Qdrant client initialized and connected successfully.")
+        except Exception as e:
+            print(f"Failed to initialize Qdrant client: {e}") # Use print for early logging
+            raise # Re-raise to prevent app from starting with a bad client
+    return _cached_qdrant_client
 
 # --- Validation Checks (Keep these after defining variables) ---
 if not all([VECTOR_DB_HOST, VECTOR_DB_PORT_STR]):
