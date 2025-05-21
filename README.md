@@ -186,6 +186,48 @@ Qdrant provides a Web UI and a REST API for inspection.
         ```
 
 If data is missing or counts are incorrect, check the logs of the `db_init` service: `docker-compose logs db_init`.
+
+## Running Backend API Tests
+
+The backend API includes a suite of tests written using `pytest` to ensure functionality and reliability. These tests cover CRUD operations for products, reviews, and policies, including interactions with a test database and mocked Qdrant synchronization.
+
+### Prerequisites for Testing
+
+1.  **Python Environment**: Ensure you have a Python environment (e.g., a virtual environment like `.smartshop`) activated with all necessary development dependencies installed.
+2.  **Test Database**: The tests require a separate PostgreSQL database (e.g., `test_smartshop_db`).
+    *   Create this database on your PostgreSQL server.
+    *   Ensure the user specified in your `.env` file (e.g., `POSTGRES_USER=smartshop-ai`) has ownership or necessary privileges on this test database. You can create it and set ownership by connecting to your PostgreSQL instance (e.g., via `docker-compose exec db psql -U ${POSTGRES_USER} -d postgres`) and running:
+        ```sql
+        CREATE DATABASE test_smartshop_db;
+        ALTER DATABASE test_smartshop_db OWNER TO smartshop_ai; -- Replace smartshop_ai if your user is different
+        ```
+    The test configuration in `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/backend/tests/conftest.py` will automatically create and drop tables within this test database for each test session.
+
+### Installing Test Dependencies
+
+Navigate to the backend directory and install the development requirements:
+```bash
+cd /home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/backend/
+pip install -r requirements-dev.text # Or requirements-dev.txt if you renamed it
+```
+This file should include `pytest`, `requests-mock`, `httpx`, and all other dependencies required by the backend application and its tests.
+
+### Running Tests
+
+1.  Ensure your Python virtual environment is activated.
+2.  Navigate to the backend directory:
+    ```bash
+    cd /home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/backend/
+    ```
+3.  Run `pytest`:
+    ```bash
+    pytest
+    ```
+    For more detailed output:
+    ```bash
+    pytest -v -s
+    ```
+    
 ## Accessing Services
 
 *   **Backend API (FastAPI)**:
