@@ -57,17 +57,17 @@ def read_product(product_id: str, db: Session = Depends(get_db)):
 @app.post("/products/", response_model=Product)
 def create_product(product: ProductCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
     try:
-        db_product = ProductDB(**product.dict())
+        db_product = ProductDB(**product.model_dump())
         db.add(db_product)
         db.commit()
         db.refresh(db_product)
     except IntegrityError: # Catch duplicate key errors or other unique constraint violations
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Product with ID '{product.product_id}' already exists or violates a unique constraint.")
-    # Sync with Qdrant
+    # Sync with Qdrant (ensure product_id is correctly passed if it's part of product_data)
     if q_client:
         try:
-            update_product_in_qdrant(q_client, db_product.product_id, product.dict())
+            update_product_in_qdrant(q_client, db_product.product_id, product.model_dump())
         except Exception as e:
             logger.error(f"Failed to sync new product {db_product.product_id} to Qdrant: {e}", exc_info=True)
     # Else: Qdrant client not available, logged in get_qdrant_db_client
@@ -78,14 +78,14 @@ def update_product(product_id: str, product: ProductCreate, db: Session = Depend
     db_product = db.query(ProductDB).filter(ProductDB.product_id == product_id, ProductDB.is_deleted == False).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
-    for key, value in product.dict().items():
+    for key, value in product.model_dump(exclude_unset=True).items(): # exclude_unset for partial updates
         setattr(db_product, key, value)
     db.commit()
     db.refresh(db_product)
     # Sync with Qdrant
     if q_client:
         try:
-            update_product_in_qdrant(q_client, product_id, product.dict()) # Pass original product_id
+            update_product_in_qdrant(q_client, product_id, product.model_dump())
         except Exception as e:
             logger.error(f"Failed to sync updated product {product_id} to Qdrant: {e}", exc_info=True)
     return db_product
@@ -129,15 +129,14 @@ def create_review(review: ReviewCreate, db: Session = Depends(get_db), q_client 
     if not product:
         raise HTTPException(status_code=400, detail="Product not found")
 
-    db_review = ReviewDB(**review.dict())
+    db_review = ReviewDB(**review.model_dump())
     db.add(db_review)
     db.commit()
     db.refresh(db_review)
     # Sync with Qdrant
     if q_client:
         try:
-            # Pass db_review.review_id as it's the generated ID
-            update_review_in_qdrant(q_client, db_review.review_id, review.dict())
+            update_review_in_qdrant(q_client, db_review.review_id, review.model_dump())
         except Exception as e:
             logger.error(f"Failed to sync new review {db_review.review_id} to Qdrant: {e}", exc_info=True)
     return db_review
@@ -153,14 +152,14 @@ def update_review(review_id: int, review: ReviewCreate, db: Session = Depends(ge
         if not product:
             raise HTTPException(status_code=400, detail="New product_id for review not found")
             
-    for key, value in review.dict().items():
+    for key, value in review.model_dump(exclude_unset=True).items(): # exclude_unset for partial updates
         setattr(db_review, key, value)
     db.commit()
     db.refresh(db_review)
     # Sync with Qdrant
     if q_client:
         try:
-            update_review_in_qdrant(q_client, review_id, review.dict())
+            update_review_in_qdrant(q_client, review_id, review.model_dump())
         except Exception as e:
             logger.error(f"Failed to sync updated review {review_id} to Qdrant: {e}", exc_info=True)
     return db_review
@@ -196,15 +195,14 @@ def read_policy(policy_id: int, db: Session = Depends(get_db)):
 
 @app.post("/policies/", response_model=StorePolicy)
 def create_policy(policy: StorePolicyCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
-    db_policy = StorePolicyDB(**policy.dict())
+    db_policy = StorePolicyDB(**policy.model_dump())
     db.add(db_policy)
     db.commit()
     db.refresh(db_policy)
     # Sync with Qdrant
     if q_client:
         try:
-            # Pass db_policy.policy_id as it's the generated ID
-            update_policy_in_qdrant(q_client, db_policy.policy_id, policy.dict())
+            update_policy_in_qdrant(q_client, db_policy.policy_id, policy.model_dump())
         except Exception as e:
             logger.error(f"Failed to sync new policy {db_policy.policy_id} to Qdrant: {e}", exc_info=True)
     return db_policy
@@ -214,14 +212,14 @@ def update_policy(policy_id: int, policy: StorePolicyCreate, db: Session = Depen
     db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
-    for key, value in policy.dict().items():
+    for key, value in policy.model_dump(exclude_unset=True).items(): # exclude_unset for partial updates
         setattr(db_policy, key, value)
     db.commit()
     db.refresh(db_policy)
     # Sync with Qdrant
     if q_client:
         try:
-            update_policy_in_qdrant(q_client, policy_id, policy.dict())
+            update_policy_in_qdrant(q_client, policy_id, policy.model_dump())
         except Exception as e:
             logger.error(f"Failed to sync updated policy {policy_id} to Qdrant: {e}", exc_info=True)
     return db_policy

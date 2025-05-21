@@ -1,85 +1,118 @@
-from pydantic import BaseModel
-from typing import List, Optional # Removed Text from here if it was only for Pydantic models
-from sqlalchemy import Column, Integer, String, Text, DECIMAL, TIMESTAMP, Boolean, ForeignKey # Text is still needed for SQLAlchemy DB models
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy.orm import relationship, declarative_base, Mapped, mapped_column
 from sqlalchemy.sql import func
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List
 from datetime import datetime
 
+# --- SQLAlchemy Base ---
 Base = declarative_base()
 
-# --- Pydantic Models ---
-class ProductBase(BaseModel):
+# --- Pydantic Models (Schemas for API requests and responses) ---
+
+# Pydantic V2 model configuration
+# Use from_attributes=True instead of orm_mode=True
+# Use ConfigDict instead of Config class
+MODEL_CONFIG = ConfigDict(from_attributes=True)
+
+# Base Pydantic model for ORM compatibility
+class OrmBaseModel(BaseModel):
+    model_config = MODEL_CONFIG
+
+
+# Product Schemas
+class ProductBase(OrmBaseModel):
     name: str
-    brand: Optional[str] = None
+    description: Optional[str] = None
+    price: float = Field(..., gt=0)
     category: Optional[str] = None
-    price: float
-    description: Optional[str] = None  # Changed from Text to str
-    stock: Optional[int] = None
-    rating: Optional[float] = None
+    brand: Optional[str] = None
+    stock: Optional[int] = Field(None, ge=0)
+    rating: Optional[float] = Field(None, ge=0, le=5)
+    # product_id is the primary key, usually handled in ProductCreate or path
+    # created_at, updated_at, is_deleted are usually handled by the DB/server
 
 class ProductCreate(ProductBase):
-    product_id: str  # Changed to str to match the database
+    # Explicitly define all fields required in the POST request body
+    product_id: str # This is the primary key and must be provided for creation
+    name: str
+    description: Optional[str] = None
+    price: float = Field(..., gt=0)
+    category: Optional[str] = None
+    brand: Optional[str] = None
+    stock: Optional[int] = Field(None, ge=0)
+    rating: Optional[float] = Field(None, ge=0, le=5)
+
 
 class Product(ProductBase):
-    product_id: str
+    product_id: str # Include product_id in the response model
     created_at: datetime
-    updated_at: Optional[datetime]
-    is_deleted: bool
+    updated_at: Optional[datetime] = None
+    is_deleted: bool = False
 
-    class Config:
-        orm_mode = True
 
-class ReviewBase(BaseModel):
-    product_id: str
-    rating: float
-    text: Optional[str] = None  # Changed from Text to str
-    review_date: Optional[datetime]
+# Review Schemas
+class ReviewBase(OrmBaseModel):
+    product_id: str # Foreign key to Product
+    user_id: str # Assuming user_id is a string, adjust if it's an int
+    rating: int = Field(..., ge=1, le=5)
+    text: Optional[str] = None
+    # review_date is usually set by the server or DB default
+    # review_id, created_at, updated_at, is_deleted are usually handled by the DB/server
 
 class ReviewCreate(ReviewBase):
-    pass
+    # Explicitly define all fields required in the POST request body
+    product_id: str
+    user_id: str
+    rating: int = Field(..., ge=1, le=5)
+    text: Optional[str] = None
 
 class Review(ReviewBase):
-    review_id: int
+    review_id: int # Primary key
+    review_date: Optional[datetime] = None # Assuming this can be null or set by DB
     created_at: datetime
-    updated_at: Optional[datetime]
-    is_deleted: bool
+    updated_at: Optional[datetime] = None
+    is_deleted: bool = False
 
-    class Config:
-        orm_mode = True
 
-class StorePolicyBase(BaseModel):
+# Store Policy Schemas
+class StorePolicyBase(OrmBaseModel):
     policy_type: str
-    description: str # This was already str, which is good
-    conditions: Optional[str] = None  # Changed from Text to str
-    timeframe: Optional[int] = None
+    description: str
+    conditions: Optional[str] = None
+    timeframe: Optional[str] = None
+    # policy_id, created_at, updated_at, is_deleted are usually handled by the DB/server
 
 class StorePolicyCreate(StorePolicyBase):
-    pass
+    # Explicitly define all fields required in the POST request body
+    policy_type: str
+    description: str
+    conditions: Optional[str] = None
+    timeframe: Optional[str] = None
 
 class StorePolicy(StorePolicyBase):
-    policy_id: int
+    policy_id: int # Primary key
     created_at: datetime
-    updated_at: Optional[datetime]
-    is_deleted: bool
+    updated_at: Optional[datetime] = None
+    is_deleted: bool = False
 
-    class Config:
-        orm_mode = True
 
-# --- SQLAlchemy Models ---
+# --- SQLAlchemy ORM Models (Database table definitions) ---
+
 class ProductDB(Base):
     __tablename__ = "products"
 
-    product_id = Column(String(20), primary_key=True, index=True)
-    name = Column(String(255), nullable=False)
-    brand = Column(String(255))
-    category = Column(String(255))
-    price = Column(DECIMAL, nullable=False)
-    description = Column(Text)
-    stock = Column(Integer)
-    rating = Column(DECIMAL(2, 1))
-    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now())
-    is_deleted = Column(Boolean, default=False)
+    product_id = Column(String, primary_key=True, index=True) # E.g., "SP0001"
+    name = Column(String, index=True, nullable=False)
+    description = Column(Text, nullable=True)
+    price = Column(Float, nullable=False)
+    category = Column(String, index=True, nullable=True)
+    brand = Column(String, index=True, nullable=True)
+    stock = Column(Integer, nullable=True)
+    rating = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    is_deleted = Column(Boolean, default=False, nullable=False)
 
     reviews = relationship("ReviewDB", back_populates="product")
 
@@ -87,14 +120,15 @@ class ProductDB(Base):
 class ReviewDB(Base):
     __tablename__ = "reviews"
 
-    review_id = Column(Integer, primary_key=True, index=True)
-    product_id = Column(String(20), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False)
-    rating = Column(DECIMAL(2, 1), nullable=False)
-    text = Column(Text)
-    review_date = Column(TIMESTAMP(timezone=True))
-    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now())
-    is_deleted = Column(Boolean, default=False)
+    review_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    product_id = Column(String, ForeignKey("products.product_id"), nullable=False)
+    user_id = Column(String, nullable=False) # Assuming user_id is a string
+    rating = Column(Integer, nullable=False)
+    text = Column(Text, nullable=True)
+    review_date = Column(DateTime(timezone=True), server_default=func.now()) # Or allow null if provided by user
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    is_deleted = Column(Boolean, default=False, nullable=False)
 
     product = relationship("ProductDB", back_populates="reviews")
 
@@ -102,11 +136,12 @@ class ReviewDB(Base):
 class StorePolicyDB(Base):
     __tablename__ = "store_policies"
 
-    policy_id = Column(Integer, primary_key=True, index=True)
-    policy_type = Column(String(255), nullable=False)
+    policy_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    policy_type = Column(String, nullable=False, index=True)
     description = Column(Text, nullable=False)
-    conditions = Column(Text)
-    timeframe = Column(Integer)
-    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now())
-    is_deleted = Column(Boolean, default=False)
+    conditions = Column(Text, nullable=True)
+    timeframe = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    is_deleted = Column(Boolean, default=False, nullable=False)
+
