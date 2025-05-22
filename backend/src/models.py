@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, D
 from sqlalchemy.orm import relationship, declarative_base, Mapped, mapped_column
 from sqlalchemy.sql import func
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, Any # Added Any for SearchResultItem.retrieved_item
 from datetime import datetime
 
 # --- SQLAlchemy Base ---
@@ -11,8 +11,6 @@ Base = declarative_base()
 # --- Pydantic Models (Schemas for API requests and responses) ---
 
 # Pydantic V2 model configuration
-# Use from_attributes=True instead of orm_mode=True
-# Use ConfigDict instead of Config class
 MODEL_CONFIG = ConfigDict(from_attributes=True)
 
 # Base Pydantic model for ORM compatibility
@@ -29,19 +27,12 @@ class ProductBase(OrmBaseModel):
     brand: Optional[str] = None
     stock: Optional[int] = Field(None, ge=0)
     rating: Optional[float] = Field(None, ge=0, le=5)
-    # product_id is the primary key, usually handled in ProductCreate or path
-    # created_at, updated_at, is_deleted are usually handled by the DB/server
 
 class ProductCreate(ProductBase):
     # Explicitly define all fields required in the POST request body
     product_id: str # This is the primary key and must be provided for creation
-    name: str
-    description: Optional[str] = None
-    price: float = Field(..., gt=0)
-    category: Optional[str] = None
-    brand: Optional[str] = None
-    stock: Optional[int] = Field(None, ge=0)
-    rating: Optional[float] = Field(None, ge=0, le=5)
+    # name, description, price, etc., are inherited from ProductBase
+    # and their optionality/requirements are defined there or overridden here if needed.
 
 
 class Product(ProductBase):
@@ -57,15 +48,11 @@ class ReviewBase(OrmBaseModel):
     user_id: str # Assuming user_id is a string, adjust if it's an int
     rating: int = Field(..., ge=1, le=5)
     text: Optional[str] = None
-    # review_date is usually set by the server or DB default
-    # review_id, created_at, updated_at, is_deleted are usually handled by the DB/server
 
 class ReviewCreate(ReviewBase):
-    # Explicitly define all fields required in the POST request body
-    product_id: str
-    user_id: str
-    rating: int = Field(..., ge=1, le=5)
-    text: Optional[str] = None
+    # All fields from ReviewBase are inherited and their requirements are defined there.
+    # No need to redefine unless overriding behavior.
+    pass
 
 class Review(ReviewBase):
     review_id: int # Primary key
@@ -81,20 +68,38 @@ class StorePolicyBase(OrmBaseModel):
     description: str
     conditions: Optional[str] = None
     timeframe: Optional[str] = None
-    # policy_id, created_at, updated_at, is_deleted are usually handled by the DB/server
 
 class StorePolicyCreate(StorePolicyBase):
-    # Explicitly define all fields required in the POST request body
-    policy_type: str
-    description: str
-    conditions: Optional[str] = None
-    timeframe: Optional[str] = None
+    # All fields from StorePolicyBase are inherited.
+    pass
 
 class StorePolicy(StorePolicyBase):
     policy_id: int # Primary key
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_deleted: bool = False
+
+
+# --- Search Schemas ---
+class SearchQuery(BaseModel):
+    query: str = Field(..., min_length=1, description="The search query text.")
+    limit: int = Field(10, ge=1, le=100, description="Maximum number of results to return.")
+    # Optional: Add filters like specific collections to search
+    # search_in_products: bool = True
+    # search_in_reviews: bool = True
+    # search_in_policies: bool = True
+
+class SearchResultItem(BaseModel):
+    score: Optional[float] = Field(None, description="Relevance score from the vector search (if applicable).")
+    source_collection: Optional[str] = Field(None, description="The Qdrant collection the result came from (if applicable).")
+    payload: Optional[dict] = Field(None, description="The payload of the Qdrant point (if applicable).")
+    retrieved_item: Optional[Any] = Field(None, description="The full item retrieved from PostgreSQL (Product, Review, or StorePolicy).")
+
+class SearchResponse(BaseModel):
+    query_type: str = Field(..., description="Type of query processed (e.g., 'product_id_lookup', 'semantic_search_rag').")
+    llm_answer: Optional[str] = Field(None, description="LLM generated answer for semantic search queries.")
+    direct_product_result: Optional[Product] = Field(None, description="Direct product result if query was a product ID.")
+    results: List[SearchResultItem] = Field(default_factory=list, description="List of source documents or search results.")
 
 
 # --- SQLAlchemy ORM Models (Database table definitions) ---
@@ -129,7 +134,6 @@ class ReviewDB(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     is_deleted = Column(Boolean, default=False, nullable=False)
-
     product = relationship("ProductDB", back_populates="reviews")
 
 

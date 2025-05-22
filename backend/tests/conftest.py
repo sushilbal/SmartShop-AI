@@ -6,7 +6,8 @@ from typing import Generator, Any
 from unittest.mock import MagicMock
 
 from config.config import DATABASE_URL # Your main DB URL
-from src.main import app, get_db, get_qdrant_db_client # Import your FastAPI app and dependencies
+from src.main import app # Import your FastAPI app
+from src.dependencies import get_db, get_qdrant_db_client # Import dependencies
 from src.models import Base # Import your SQLAlchemy Base
 
 # --- Test Database Setup ---

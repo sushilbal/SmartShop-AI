@@ -61,6 +61,8 @@ VECTOR_DB_COLLECTION_POLICIES = os.getenv('VECTOR_DB_COLLECTION_POLICIES', 'poli
 
 SENTENCE_TRANSFORMER_MODEL = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 # --- Embedding Model Configuration and Loading ---
 # Define a cache folder for sentence-transformers models within the container
 # This path should be mounted as a volume in Docker Compose for persistence and sharing

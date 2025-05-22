@@ -3,4 +3,5 @@ uvicorn[standard]
 SQLAlchemy
 psycopg2-binary
 python-dotenv # If your backend/app/config.py uses it
+openai>=1.0.0
 # Add any other backend-specific dependencies here
