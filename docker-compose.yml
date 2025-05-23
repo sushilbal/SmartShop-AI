@@ -21,7 +21,9 @@ services:
   embedding_model:
     build:
       context: .
-      dockerfile: ./embedding_service/Dockerfile # Assuming you created this
+      dockerfile: ./embedding_service/Dockerfile
+      args:
+        MODEL_CACHE_FOLDER_ARG: ${MODEL_CACHE_FOLDER} # Pass .env variable as build arg
     restart: unless-stopped
     ports:
       - "8001:8001"
