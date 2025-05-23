@@ -27,13 +27,24 @@ services:
       - "8001:8001"
     environment:
       # Allow overriding the model name via .env file
-      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-all-MiniLM-L6-v2}
-      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER:-/app/model_cache} # Pass to container
-      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER:-true}
+      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER} # Pass to container
+      # Add PostgreSQL variables to satisfy config.py, even if not directly used by this service
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PYTHONPATH: /app  # Explicitly set PYTHONPATH
+      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER}
+      SENTENCE_TRANSFORMER_MODEL: ${EMBEDDING_MODEL_NAME}
+      VECTOR_DB_HOST: ${VECTOR_DB_HOST}
+      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL} 
+      VECTOR_DB_PORT: ${VECTOR_DB_PORT}
     networks:
       - smartshop_net
     volumes:
-      - embedding_model_cache:${MODEL_CACHE_FOLDER:-/app/model_cache} # Mount shared cache
+      - ./config:/app/config # Mount the config directory
+      - embedding_model_cache:${MODEL_CACHE_FOLDER} # Mount shared cache
     # Add healthcheck for embedding_model if you implement one in its FastAPI app
 
   vector_db: # <--- NEW QDRANT SERVICE
@@ -67,15 +78,16 @@ services:
       # These match what config/config.py expects via os.getenv
       POSTGRES_HOST: db
       POSTGRES_PORT: ${POSTGRES_PORT}
-      POSTGRES_DB: ${POSTGRES_DB} # Gets value from root .env's POSTGRES_DB
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # Gets value from root .env's POSTGRES_PASSWORD
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       # Allow overriding the sentence transformer model used by populate_db.py
-      SENTENCE_TRANSFORMER_MODEL: ${EMBEDDING_MODEL_NAME} # If not set in .env, config.py's default will be used
-      VECTOR_DB_HOST: vector_db # <--- Hostname for Qdrant
-      VECTOR_DB_PORT: ${VECTOR_DB_PORT} # <--- gRPC port for Qdrant
-      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER:-/app/model_cache} # Pass to container
-      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER:-true}
+      SENTENCE_TRANSFORMER_MODEL: ${EMBEDDING_MODEL_NAME}
+      VECTOR_DB_HOST: ${VECTOR_DB_HOST}
+      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL} 
+      VECTOR_DB_PORT: ${VECTOR_DB_PORT}
+      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER}
+      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER}
       PYTHONPATH: /app
     networks:
       - smartshop_net
@@ -83,7 +95,7 @@ services:
       - ./scripts:/app/scripts
       - ./config:/app/config
       - ./database:/app/database # For init.sql
-      - embedding_model_cache:${MODEL_CACHE_FOLDER:-/app/model_cache} # Mount shared cache
+      - embedding_model_cache:${MODEL_CACHE_FOLDER} # Mount shared cache
       - ./data:/app/data
     command: ["python", "/app/scripts/populate_db.py"]
 
@@ -108,16 +120,18 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       VECTOR_DB_HOST: vector_db # <--- Hostname for Qdrant
       VECTOR_DB_PORT: ${VECTOR_DB_PORT}  # <--- gRPC port for Qdrant
-      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER:-/app/model_cache} # Pass to container (optional for backend, but good for consistency)
-      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER:-true}
+      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL}
+      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER} # Pass to container (optional for backend, but good for consistency)
+      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER}
       PYTHONPATH: /app # Assuming backend code is in /app/src and this helps imports
     ports:
       - "8000:8000"
     networks:
       - smartshop_net
     volumes:
-      - ./backend:/app # Contains src/, etc.
-      - embedding_model_cache:${MODEL_CACHE_FOLDER:-/app/model_cache} # If backend ever loads models directly
+      - ./backend:/app
+      - ./config:/app/config
+      - embedding_model_cache:${MODEL_CACHE_FOLDER}
 
 #  frontend:
 #    build:

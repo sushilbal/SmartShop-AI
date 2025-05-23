@@ -23,7 +23,7 @@ sample_policy_data_create = {
 _updated_description = "Returns accepted within 30 days of purchase."
 _updated_conditions = "Item must be unused and in original packaging."
 _updated_timeframe = "30 days"
-updated_policy_data_create = {
+updated_policy_data_create_full = { # Renamed to avoid confusion with partial updates
     "policy_type": "Returns",
     "description": _updated_description,
     "conditions": _updated_conditions,
@@ -153,7 +153,8 @@ def test_read_policies_pagination(client: TestClient, db_session: Session):
         assert response_skip1_limit1.json()[0]["policy_id"] == all_policies[1]["policy_id"]
 
 def test_update_policy_success(client: TestClient, db_session: Session, mock_qdrant_client: MagicMock):
-    create_response = client.post("/policies/", json=sample_policy_data_create)
+    create_response = client.post("/policies/", json=sample_policy_data_create) # This POST should succeed based on previous fixes
+    assert create_response.status_code == 200 # Add assertion
     created_policy_id = create_response.json()["policy_id"]
     mock_qdrant_client.reset_mock()
 
@@ -198,11 +199,15 @@ def test_update_policy_partial(client: TestClient, db_session: Session, mock_qdr
     mock_qdrant_client.upsert.assert_called_once()
 
 def test_update_policy_not_found(client: TestClient):
-    response = client.put("/policies/999999", json=updated_policy_data_create)
+    # Use a valid payload for the update request
+    valid_update_payload = {**updated_policy_data_create_full, "policy_type": "ValidUpdateType"}
+    response = client.put("/policies/999999", json=valid_update_payload)
+    # Now that the payload is valid, the endpoint should correctly return 404 for a non-existent ID
     assert response.status_code == 404
 
 def test_update_soft_deleted_policy(client: TestClient, db_session: Session):
-    create_response = client.post("/policies/", json=sample_policy_data_create)
+    create_response = client.post("/policies/", json=sample_policy_data_create) # This POST should succeed
+    assert create_response.status_code == 200 # Add assertion
     created_policy_id = create_response.json()["policy_id"]
     client.delete(f"/policies/{created_policy_id}") # Soft delete
 
@@ -210,7 +215,8 @@ def test_update_soft_deleted_policy(client: TestClient, db_session: Session):
     assert response.status_code == 404 # Should not be able to update a soft-deleted policy
 
 def test_delete_policy_success(client: TestClient, db_session: Session, mock_qdrant_client: MagicMock):
-    create_response = client.post("/policies/", json=sample_policy_data_create)
+    create_response = client.post("/policies/", json=sample_policy_data_create) # This POST should succeed
+    assert create_response.status_code == 200 # Add assertion
     created_policy_id = create_response.json()["policy_id"]
     mock_qdrant_client.reset_mock()
 
@@ -235,7 +241,8 @@ def test_delete_policy_not_found(client: TestClient):
     assert response.status_code == 404
 
 def test_delete_already_deleted_policy(client: TestClient, db_session: Session):
-    create_response = client.post("/policies/", json=sample_policy_data_create)
+    create_response = client.post("/policies/", json=sample_policy_data_create) # This POST should succeed
+    assert create_response.status_code == 200 # Add assertion
     created_policy_id = create_response.json()["policy_id"]
     client.delete(f"/policies/{created_policy_id}") # First delete
 

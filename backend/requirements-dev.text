@@ -12,5 +12,5 @@ qdrant_client
 langchain>=0.1.0
 langgraph>=0.0.20
 langchain-openai # If you haven't added this already for llm_handler.py
-men openai>=1.0.0 # Should already be there for llm_handler.py
+openai>=1.0.0 # Should already be there for llm_handler.py
 tf-keras

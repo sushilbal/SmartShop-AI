@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Using CPU version of PyTorch for broader compatibility initially
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir sentence-transformers fastapi uvicorn "transformers>=4.30.0" pydantic
+RUN pip install --no-cache-dir sentence-transformers fastapi uvicorn "transformers>=4.30.0" pydantic python-dotenv qdrant-client
 
 COPY ./embedding_service/main.py /app/main.py
 
