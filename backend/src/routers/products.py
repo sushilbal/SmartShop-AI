@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
 import logging
@@ -29,7 +29,12 @@ def read_product(product_id: str, db: Session = Depends(get_db)):
     return product
 
 @router.post("/", response_model=Product)
-def create_product(product: ProductCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def create_product(
+    product: ProductCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     try:
         db_product = ProductDB(**product.model_dump())
         db.add(db_product)
@@ -38,16 +43,21 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db), q_clie
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Product with ID '{product.product_id}' already exists or violates a unique constraint.")
-    
+
     if q_client:
-        try:
-            update_product_in_qdrant(q_client, db_product.product_id, product.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to sync new product {db_product.product_id} to Qdrant: {e}", exc_info=True)
+        # Qdrant update will now run in the background
+        # Assumes update_product_in_qdrant handles its own exceptions and logging
+        background_tasks.add_task(update_product_in_qdrant, q_client, db_product.product_id, product.model_dump())
     return db_product
 
 @router.put("/{product_id}", response_model=Product)
-def update_product(product_id: str, product: ProductCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def update_product(
+    product_id: str,
+    product: ProductCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     db_product = db.query(ProductDB).filter(ProductDB.product_id == product_id, ProductDB.is_deleted == False).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -56,14 +66,16 @@ def update_product(product_id: str, product: ProductCreate, db: Session = Depend
     db.commit()
     db.refresh(db_product)
     if q_client:
-        try:
-            update_product_in_qdrant(q_client, product_id, product.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to sync updated product {product_id} to Qdrant: {e}", exc_info=True)
+        background_tasks.add_task(update_product_in_qdrant, q_client, product_id, product.model_dump())
     return db_product
 
 @router.delete("/{product_id}", response_model=Product)
-def delete_product(product_id: str, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def delete_product(
+    product_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     db_product = db.query(ProductDB).filter(ProductDB.product_id == product_id, ProductDB.is_deleted == False).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -71,8 +83,5 @@ def delete_product(product_id: str, db: Session = Depends(get_db), q_client = De
     db.commit()
     db.refresh(db_product)
     if q_client:
-        try:
-            delete_product_from_qdrant(q_client, product_id)
-        except Exception as e:
-            logger.error(f"Failed to delete product {product_id} from Qdrant: {e}", exc_info=True)
+        background_tasks.add_task(delete_product_from_qdrant, q_client, product_id)
     return db_product

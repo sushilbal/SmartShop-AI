@@ -46,7 +46,7 @@ class Product(ProductBase):
 class ReviewBase(OrmBaseModel):
     product_id: str # Foreign key to Product
     user_id: str # Assuming user_id is a string, adjust if it's an int
-    rating: int = Field(..., ge=1, le=5)
+    rating: float = Field(..., ge=1, le=5)
     text: Optional[str] = None
 
 class ReviewCreate(ReviewBase):
@@ -67,7 +67,7 @@ class StorePolicyBase(OrmBaseModel):
     policy_type: str
     description: str
     conditions: Optional[str] = None
-    timeframe: Optional[str] = None
+    timeframe: Optional[int] = None
 
 class StorePolicyCreate(StorePolicyBase):
     # All fields from StorePolicyBase are inherited.
@@ -128,7 +128,7 @@ class ReviewDB(Base):
     review_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     product_id = Column(String, ForeignKey("products.product_id"), nullable=False)
     user_id = Column(String, nullable=False) # Assuming user_id is a string
-    rating = Column(Integer, nullable=False)
+    rating = Column(Float, nullable=False)
     text = Column(Text, nullable=True)
     review_date = Column(DateTime(timezone=True), server_default=func.now()) # Or allow null if provided by user
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -144,7 +144,7 @@ class StorePolicyDB(Base):
     policy_type = Column(String, nullable=False, index=True)
     description = Column(Text, nullable=False)
     conditions = Column(Text, nullable=True)
-    timeframe = Column(String, nullable=True)
+    timeframe = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     is_deleted = Column(Boolean, default=False, nullable=False)

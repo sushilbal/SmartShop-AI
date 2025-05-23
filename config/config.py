@@ -44,13 +44,13 @@ REVIEWS_CSV_PATH = os.path.join(BASE_DATA_PATH, 'reviews.csv')
 STORE_POLICIES_CSV_PATH = os.path.join(BASE_DATA_PATH, 'store_policies.csv')
 INIT_SQL_PATH = os.path.join(PROJECT_ROOT, 'database', 'init.sql')
 
-# # --- Embedding Service Configuration ---
-# EMBEDDING_SERVICE_URL = os.getenv('EMBEDDING_SERVICE_URL')
-# if not EMBEDDING_SERVICE_URL:
-#     raise EnvironmentError(
-#         "Missing EMBEDDING_SERVICE_URL environment variable. "
-#         "Ensure it is set in your .env file or system environment."
-#     )
+# --- Embedding Service Configuration ---
+EMBEDDING_SERVICE_URL = os.getenv('EMBEDDING_SERVICE_URL')
+if not EMBEDDING_SERVICE_URL:
+    raise EnvironmentError(
+        "Missing EMBEDDING_SERVICE_URL environment variable. "
+        "Ensure it is set in your .env file or system environment."
+    )
 
 # --- Vector DB (Qdrant) Configuration ---
 VECTOR_DB_HOST = os.getenv('VECTOR_DB_HOST')

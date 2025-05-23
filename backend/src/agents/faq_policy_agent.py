@@ -1,21 +1,18 @@
 from typing import List, TypedDict, Annotated, Sequence
 import operator
-
-# Assuming you'll use LangChain components for Qdrant and OpenAI
-# from langchain_community.vectorstores import Qdrant # Example
-# from langchain_openai import ChatOpenAI # Example
-# from langchain_core.documents import Document # Example
+import httpx
 
 from langgraph.graph import StateGraph, END
 
 # Import your existing helpers (you might refactor them slightly to fit LangGraph nodes)
-from src.embedding_sync import get_embeddings_for_texts
+# from src.embedding_sync import get_embeddings_for_texts # Replaced by HTTP call
 from src.llm_handler import get_llm_rag_response # You might adapt this or use LangChain's LLM wrapper
 from src.dependencies import get_qdrant_db_client # To get a Qdrant client instance
 from config.config import (
     VECTOR_DB_COLLECTION_POLICIES,
     VECTOR_DB_COLLECTION_REVIEWS, # If FAQ can also search reviews
-    VECTOR_DB_COLLECTION_PRODUCTS # If FAQ can also search products
+    VECTOR_DB_COLLECTION_PRODUCTS, # If FAQ can also search products
+    EMBEDDING_SERVICE_URL # Assuming this is defined in your config e.g., "http://localhost:8001/embed/"
 )
 # You'll need to pass the Qdrant client to the nodes or make it accessible.
 
@@ -29,15 +26,32 @@ class FaqPolicyAgentState(TypedDict):
     final_response: dict # Could be your SearchResponse Pydantic model structure
 
 # --- Node Functions ---
-def embed_query_node(state: FaqPolicyAgentState):
+async def embed_query_node(state: FaqPolicyAgentState): # Changed to async
     print("--- Node: Embedding Query ---")
     query = state["original_query"]
-    embedding_list = get_embeddings_for_texts([query])
-    if not embedding_list or not embedding_list[0]:
-        # Handle error: maybe set a flag or raise an exception LangGraph can catch
-        print("Error: Could not embed query")
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            # Assuming the embedding service expects a list of texts
+            response = await client.post(EMBEDDING_SERVICE_URL, json={"texts": [query]})
+            response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+            result = response.json()
+            
+            # Assuming the service returns a list of embeddings, one for each input text
+            if "embeddings" in result and isinstance(result["embeddings"], list) and len(result["embeddings"]) > 0:
+                embedding = result["embeddings"][0]
+                if isinstance(embedding, list):
+                    return {"query_embedding": embedding}
+            
+            print(f"Error: Unexpected response format from embedding service: {result}")
+            return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": "Error embedding query due to unexpected response format."}
+
+        except httpx.RequestError as e:
+            print(f"Error calling embedding service: {e}")
+            return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": f"Error embedding query: {e}"}
+        except Exception as e:
+            print(f"An unexpected error occurred during query embedding: {e}")
         return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": "Error embedding query."}
-    return {"query_embedding": embedding_list[0]}
 
 def search_qdrant_node(state: FaqPolicyAgentState):
     print("--- Node: Searching Qdrant ---")

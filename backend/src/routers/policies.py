@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
 import logging
@@ -27,20 +27,28 @@ def read_policy(policy_id: int, db: Session = Depends(get_db)):
     return policy
 
 @router.post("/", response_model=StorePolicy)
-def create_policy(policy: StorePolicyCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def create_policy(
+    policy: StorePolicyCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     db_policy = StorePolicyDB(**policy.model_dump())
     db.add(db_policy)
     db.commit()
     db.refresh(db_policy)
     if q_client:
-        try:
-            update_policy_in_qdrant(q_client, db_policy.policy_id, policy.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to sync new policy {db_policy.policy_id} to Qdrant: {e}", exc_info=True)
+        background_tasks.add_task(update_policy_in_qdrant, q_client, db_policy.policy_id, policy.model_dump())
     return db_policy
 
 @router.put("/{policy_id}", response_model=StorePolicy)
-def update_policy(policy_id: int, policy: StorePolicyCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def update_policy(
+    policy_id: int,
+    policy: StorePolicyCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
@@ -49,14 +57,16 @@ def update_policy(policy_id: int, policy: StorePolicyCreate, db: Session = Depen
     db.commit()
     db.refresh(db_policy)
     if q_client:
-        try:
-            update_policy_in_qdrant(q_client, policy_id, policy.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to sync updated policy {policy_id} to Qdrant: {e}", exc_info=True)
+        background_tasks.add_task(update_policy_in_qdrant, q_client, policy_id, policy.model_dump())
     return db_policy
 
 @router.delete("/{policy_id}", response_model=StorePolicy)
-def delete_policy(policy_id: int, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def delete_policy(
+    policy_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
     if not db_policy:
         raise HTTPException(status_code=404, detail="Policy not found")
@@ -64,8 +74,5 @@ def delete_policy(policy_id: int, db: Session = Depends(get_db), q_client = Depe
     db.commit()
     db.refresh(db_policy)
     if q_client:
-        try:
-            delete_policy_from_qdrant(q_client, policy_id)
-        except Exception as e:
-            logger.error(f"Failed to delete policy {policy_id} from Qdrant: {e}", exc_info=True)
+        background_tasks.add_task(delete_policy_from_qdrant, q_client, policy_id)
     return db_policy

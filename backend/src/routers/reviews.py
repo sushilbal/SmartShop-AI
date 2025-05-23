@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import logging
@@ -30,7 +30,12 @@ def read_review(review_id: int, db: Session = Depends(get_db)):
     return review
 
 @router.post("/", response_model=Review)
-def create_review(review: ReviewCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def create_review(
+    review: ReviewCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     product = db.query(ProductDB).filter(ProductDB.product_id == review.product_id, ProductDB.is_deleted == False).first()
     if not product:
         raise HTTPException(status_code=400, detail="Product not found")
@@ -40,14 +45,17 @@ def create_review(review: ReviewCreate, db: Session = Depends(get_db), q_client 
     db.commit()
     db.refresh(db_review)
     if q_client:
-        try:
-            update_review_in_qdrant(q_client, db_review.review_id, review.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to sync new review {db_review.review_id} to Qdrant: {e}", exc_info=True)
+        background_tasks.add_task(update_review_in_qdrant, q_client, db_review.review_id, review.model_dump())
     return db_review
 
 @router.put("/{review_id}", response_model=Review)
-def update_review(review_id: int, review: ReviewCreate, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def update_review(
+    review_id: int,
+    review: ReviewCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     db_review = db.query(ReviewDB).filter(ReviewDB.review_id == review_id, ReviewDB.is_deleted == False).first()
     if not db_review:
         raise HTTPException(status_code=404, detail="Review not found")
@@ -55,20 +63,22 @@ def update_review(review_id: int, review: ReviewCreate, db: Session = Depends(ge
         product = db.query(ProductDB).filter(ProductDB.product_id == review.product_id, ProductDB.is_deleted == False).first()
         if not product:
             raise HTTPException(status_code=400, detail="New product_id for review not found")
-            
+
     for key, value in review.model_dump(exclude_unset=True).items():
         setattr(db_review, key, value)
     db.commit()
     db.refresh(db_review)
     if q_client:
-        try:
-            update_review_in_qdrant(q_client, review_id, review.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to sync updated review {review_id} to Qdrant: {e}", exc_info=True)
+        background_tasks.add_task(update_review_in_qdrant, q_client, review_id, review.model_dump())
     return db_review
 
 @router.delete("/{review_id}", response_model=Review)
-def delete_review(review_id: int, db: Session = Depends(get_db), q_client = Depends(get_qdrant_db_client)):
+def delete_review(
+    review_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    q_client = Depends(get_qdrant_db_client)
+):
     db_review = db.query(ReviewDB).filter(ReviewDB.review_id == review_id, ReviewDB.is_deleted == False).first()
     if not db_review:
         raise HTTPException(status_code=404, detail="Review not found")
@@ -76,8 +86,5 @@ def delete_review(review_id: int, db: Session = Depends(get_db), q_client = Depe
     db.commit()
     db.refresh(db_review)
     if q_client:
-        try:
-            delete_review_from_qdrant(q_client, review_id)
-        except Exception as e:
-            logger.error(f"Failed to delete review {review_id} from Qdrant: {e}", exc_info=True)
+        background_tasks.add_task(delete_review_from_qdrant, q_client, review_id)
     return db_review

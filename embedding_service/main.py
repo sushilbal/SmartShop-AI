@@ -52,7 +52,7 @@ async def startup_event():
     """
     Load the embedding model on application startup.
     """
-    global model, device, MODEL_NAME
+    global model, device
     # The model loading is now handled by the centralized config function
     try:
         # Call the centralized function to get the model instance
@@ -84,13 +84,13 @@ async def get_embeddings(data: TextListInput):
     """
     Generates embeddings for a list of input texts.
     """
-    global model, SENTENCE_TRANSFORMER_MODEL # Use the model name from config
+    global model # SENTENCE_TRANSFORMER_MODEL is available from import
     if model is None:
         logger.error("Embedding model is not available. Startup might have failed.")
         raise HTTPException(status_code=503, detail="Embedding model not available or failed to load.")
-
+    
     if not data.texts:
-        return EmbeddingResponse(embeddings=[], model_name=MODEL_NAME)
+        return EmbeddingResponse(embeddings=[], model_name=SENTENCE_TRANSFORMER_MODEL)
 
     # Filter out any non-string or empty/whitespace-only strings
     valid_texts_to_embed = [text for text in data.texts if isinstance(text, str) and text.strip()]
@@ -99,7 +99,7 @@ async def get_embeddings(data: TextListInput):
         logger.info("Received request with no valid texts to embed after filtering.")
         # Return empty embeddings if all texts were invalid, matching the number of original texts if desired
         # or just an empty list for the valid ones. For simplicity, empty for valid ones:
-        return EmbeddingResponse(embeddings=[], model_name=MODEL_NAME)
+        return EmbeddingResponse(embeddings=[], model_name=SENTENCE_TRANSFORMER_MODEL)
 
     try:
         logger.info(f"Embedding {len(valid_texts_to_embed)} valid texts (out of {len(data.texts)} received).")
@@ -114,7 +114,7 @@ async def get_embeddings(data: TextListInput):
         embeddings_as_lists = [emb.tolist() for emb in embedding_vectors]
 
         logger.info(f"Successfully generated {len(embeddings_as_lists)} embeddings.")
-        return EmbeddingResponse(embeddings=embeddings_as_lists, model_name=MODEL_NAME)
+        return EmbeddingResponse(embeddings=embeddings_as_lists, model_name=SENTENCE_TRANSFORMER_MODEL)
 
     except Exception as e:
         logger.error(f"Error generating embeddings: {e}", exc_info=True)
@@ -125,8 +125,7 @@ async def health_check():
     """
     Health check endpoint to verify if the service and model are ready.
     """
-    global model, MODEL_NAME, device
-    # Use the model name and device from config
+    global model, device # SENTENCE_TRANSFORMER_MODEL and DEVICE are available from import
     if model:
         return HealthResponse(status="healthy", model_name=SENTENCE_TRANSFORMER_MODEL, device=DEVICE)
     else:
