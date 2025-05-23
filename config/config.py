@@ -66,7 +66,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # --- Embedding Model Configuration and Loading ---
 # Define a cache folder for sentence-transformers models within the container
 # This path should be mounted as a volume in Docker Compose for persistence and sharing
-MODEL_CACHE_FOLDER = '/app/model_cache'
+MODEL_CACHE_FOLDER = os.getenv('MODEL_CACHE_FOLDER', '/app/model_cache') # Default if not set
 
 # Determine the device to use (GPU if available, otherwise CPU)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'

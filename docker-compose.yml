@@ -28,10 +28,12 @@ services:
     environment:
       # Allow overriding the model name via .env file
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-all-MiniLM-L6-v2}
+      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER:-/app/model_cache} # Pass to container
+      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER:-true}
     networks:
       - smartshop_net
     volumes:
-      - embedding_model_cache:/app/model_cache # Mount shared cache
+      - embedding_model_cache:${MODEL_CACHE_FOLDER:-/app/model_cache} # Mount shared cache
     # Add healthcheck for embedding_model if you implement one in its FastAPI app
 
   vector_db: # <--- NEW QDRANT SERVICE
@@ -71,7 +73,9 @@ services:
       # Allow overriding the sentence transformer model used by populate_db.py
       SENTENCE_TRANSFORMER_MODEL: ${EMBEDDING_MODEL_NAME} # If not set in .env, config.py's default will be used
       VECTOR_DB_HOST: vector_db # <--- Hostname for Qdrant
-      VECTOR_DB_PORT: ${VECTOR_DB_PORT}    # <--- gRPC port for Qdrant
+      VECTOR_DB_PORT: ${VECTOR_DB_PORT} # <--- gRPC port for Qdrant
+      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER:-/app/model_cache} # Pass to container
+      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER:-true}
       PYTHONPATH: /app
     networks:
       - smartshop_net
@@ -79,7 +83,7 @@ services:
       - ./scripts:/app/scripts
       - ./config:/app/config
       - ./database:/app/database # For init.sql
-      - embedding_model_cache:/app/model_cache # Mount shared cache
+      - embedding_model_cache:${MODEL_CACHE_FOLDER:-/app/model_cache} # Mount shared cache
       - ./data:/app/data
     command: ["python", "/app/scripts/populate_db.py"]
 
@@ -104,6 +108,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       VECTOR_DB_HOST: vector_db # <--- Hostname for Qdrant
       VECTOR_DB_PORT: ${VECTOR_DB_PORT}  # <--- gRPC port for Qdrant
+      MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER:-/app/model_cache} # Pass to container (optional for backend, but good for consistency)
+      RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER:-true}
       PYTHONPATH: /app # Assuming backend code is in /app/src and this helps imports
     ports:
       - "8000:8000"
@@ -111,6 +117,7 @@ services:
       - smartshop_net
     volumes:
       - ./backend:/app # Contains src/, etc.
+      - embedding_model_cache:${MODEL_CACHE_FOLDER:-/app/model_cache} # If backend ever loads models directly
 
 #  frontend:
 #    build:
