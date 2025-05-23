@@ -79,15 +79,22 @@ def get_embedding_model() -> SentenceTransformer:
     global _cached_embedding_model
     if _cached_embedding_model is None:
         try:
-            # Use print for early logging before standard logging might be fully configured
-             # For local testing, allow SentenceTransformer to use its default cache path
-            # The MODEL_CACHE_FOLDER is primarily for the Docker environment where it's volume-mounted.
-            # You could use an environment variable to decide whether to set cache_folder.
-            # For simplicity here, we'll only set it if a specific env var indicates Docker.
-            # A more robust way might be to check if MODEL_CACHE_FOLDER is writable or exists.
-            cache_dir_to_use = MODEL_CACHE_FOLDER if os.getenv("RUNNING_IN_DOCKER") else None # Example check
-            print(f"CONFIG.PY: Attempting to load SentenceTransformer model '{SENTENCE_TRANSFORMER_MODEL}' on device '{DEVICE}'. Cache: {cache_dir_to_use or 'default'}")
-            _cached_embedding_model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL, device=DEVICE, cache_folder=cache_dir_to_use)
+            # When running in Docker, HF_HOME is set in the Dockerfile.
+            # SentenceTransformer will use HF_HOME by default if cache_folder is None.
+            # For local non-Docker runs, it will use its default user cache.
+            
+            print(f"CONFIG.PY: Attempting to load SentenceTransformer model '{SENTENCE_TRANSFORMER_MODEL}' on device '{DEVICE}'.")
+            # Log the relevant cache environment variables to confirm they are set as expected inside the container.
+            hf_home_path = os.getenv('HF_HOME')
+            transformers_cache_path = os.getenv('TRANSFORMERS_CACHE')
+            print(f"CONFIG.PY: HF_HOME is set to: {hf_home_path}")
+            print(f"CONFIG.PY: TRANSFORMERS_CACHE is set to: {transformers_cache_path}")
+            print(f"CONFIG.PY: MODEL_CACHE_FOLDER (from .env, for volume mount reference) is: {MODEL_CACHE_FOLDER}")
+
+            # By passing cache_folder=None, SentenceTransformer should respect HF_HOME/TRANSFORMERS_CACHE.
+            # The mkdir and chmod in the Dockerfile should ensure HF_HOME is writable.
+            _cached_embedding_model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL, device=DEVICE, cache_folder=None)
+            
             print("CONFIG.PY: SentenceTransformer model loaded successfully.")
         except Exception as e:
             print(f"CONFIG.PY: CRITICAL ERROR loading SentenceTransformer model '{SENTENCE_TRANSFORMER_MODEL}': {e}")

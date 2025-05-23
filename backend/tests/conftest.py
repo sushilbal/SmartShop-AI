@@ -1,7 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from typing import Generator, Any
 from unittest.mock import MagicMock
 
@@ -10,12 +11,22 @@ from src.main import app # Import your FastAPI app
 from src.dependencies import get_db, get_qdrant_db_client # Import dependencies
 from src.models import Base # Import your SQLAlchemy Base
 
+# For robust URL manipulation
+from urllib.parse import urlparse, urlunparse
+
 # --- Test Database Setup ---
 # For testing, it's best to use a separate database.
-# You can modify DATABASE_URL or use a different one for tests.
-# For simplicity, we'll use the same structure but on a test DB.
 # Ensure your test DB exists or is created before running tests.
-TEST_DATABASE_URL = DATABASE_URL.replace("smartshop_db", "test_smartshop_db")
+
+TEST_DB_NAME = "test_smartshop_db"
+
+# Construct TEST_DATABASE_URL robustly
+parsed_original_url = urlparse(DATABASE_URL)
+TEST_DATABASE_URL = parsed_original_url._replace(path=f"/{TEST_DB_NAME}").geturl()
+
+# URL for connecting to a maintenance database (e.g., postgres) to create the test database
+# This assumes you have a 'postgres' database or similar default maintenance DB.
+MAINTENANCE_DB_URL = parsed_original_url._replace(path="/postgres").geturl()
 
 engine = create_engine(TEST_DATABASE_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -23,12 +34,36 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 @pytest.fixture(scope="session", autouse=True)
 def create_test_database():
     """
-    Creates all tables in the test database before tests run,
-    and drops them after tests are done.
+    Ensures the test database exists and creates all tables before tests run.
+    Drops all tables after tests are done.
+    The test database itself is not dropped by this fixture by default.
     """
-    Base.metadata.create_all(bind=engine) # Create tables
+    maintenance_engine = create_engine(MAINTENANCE_DB_URL, isolation_level="AUTOCOMMIT")
+    
+    try:
+        with maintenance_engine.connect() as conn:
+            # Check if the test database exists (PostgreSQL specific)
+            result = conn.execute(text(f"SELECT 1 FROM pg_database WHERE datname = '{TEST_DB_NAME}'"))
+            db_exists = result.scalar_one_or_none()
+
+            if not db_exists:
+                conn.execute(text(f'CREATE DATABASE "{TEST_DB_NAME}"'))
+                print(f"INFO: Test database '{TEST_DB_NAME}' created.")
+            else:
+                print(f"INFO: Test database '{TEST_DB_NAME}' already exists.")
+    except OperationalError as e:
+        print(f"CRITICAL: Could not connect to maintenance database '{MAINTENANCE_DB_URL}' to create test database. Error: {e}")
+        print("Ensure your PostgreSQL server is running and the maintenance database is accessible.")
+        raise
+    except ProgrammingError as e: # Catch other DB errors during creation
+        print(f"WARNING: Error while trying to create database '{TEST_DB_NAME}'. It might already exist or there's a permission issue. Error: {e}")
+    finally:
+        maintenance_engine.dispose()
+
+    # Now, create tables in the test_smartshop_db using the main 'engine'
+    Base.metadata.create_all(bind=engine) 
     yield
-    Base.metadata.drop_all(bind=engine) # Drop tables
+    Base.metadata.drop_all(bind=engine)
 
 @pytest.fixture(scope="function")
 def db_session() -> Generator[Session, Any, None]:

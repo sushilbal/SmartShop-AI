@@ -153,4 +153,4 @@ networks:
 volumes:
   db_data:
   qdrant_storage:
-  embedding_model_cache: # Define named volume for embedding model cache
+  embedding_model_cache:
