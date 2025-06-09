@@ -1,0 +1,12 @@
+# /home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/qdrant_config.yaml
+storage:
+  storage_path: /qdrant/storage # Main data directory (volume mount point)
+  snapshots_path: /qdrant/storage/snapshots # Ensure snapshots are within the storage_path
+  # If you use on-disk payloads and encounter similar issues, you might also need:
+  # on_disk_payload_path: /qdrant/storage/payload_storage
+
+# You can also specify service ports here if needed, though Qdrant's defaults (6333/6334)
+# are usually fine and match your docker-compose port mappings.
+# service:
+#   http_port: 6333
+#   grpc_port: 6334

@@ -50,20 +50,22 @@ services:
     # Add healthcheck for embedding_model if you implement one in its FastAPI app
 
   vector_db: # <--- NEW QDRANT SERVICE
-    image: qdrant/qdrant:latest
+    build:
+      context: . # Assumes qdrant.Dockerfile is in the project root
+      dockerfile: qdrant.Dockerfile
     restart: unless-stopped
-    ports:
-      - "6333:6333"  # gRPC port for client communication
-      - "6334:6334"  # REST API port (optional, for web UI or direct REST calls)
+    ports: # Based on Qdrant 1.14.0 logs for this instance
+      - "6333:6333"  # HTTP REST API port (web UI, /readyz)
+      - "6334:6334"  # gRPC port for client communication
     volumes:
       - qdrant_storage:/qdrant/storage # To persist Qdrant data
     networks:
       - smartshop_net
     healthcheck: # Qdrant >= v1.2 uses /readyz
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/readyz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      start_period: 30s # Give Qdrant time to start up before checking health
+      test: ["CMD-SHELL", "curl -f --max-time 15 http://localhost:6333/readyz || exit 1"]
+      interval: 20s     # Increased interval between checks
+      timeout: 20s      # Increased timcleareout for Docker to wait for the command
+      start_period: 180s # Increased to 3 minutes
       retries: 5
 
   
@@ -74,8 +76,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      vector_db: # <--- Add dependency on vector_db
-        condition: service_started # or service_healthy
+      vector_db:
+        condition: service_healthy
     environment:
       # These match what config/config.py expects via os.getenv
       POSTGRES_HOST: db
@@ -86,8 +88,8 @@ services:
       # Allow overriding the sentence transformer model used by populate_db.py
       SENTENCE_TRANSFORMER_MODEL: ${EMBEDDING_MODEL_NAME}
       VECTOR_DB_HOST: ${VECTOR_DB_HOST}
-      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL} 
-      VECTOR_DB_PORT: ${VECTOR_DB_PORT}
+      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL}
+      VECTOR_DB_PORT: 6333 # Override for db_init to use Qdrant's HTTP port
       MODEL_CACHE_FOLDER: ${MODEL_CACHE_FOLDER}
       RUNNING_IN_DOCKER: ${RUNNING_IN_DOCKER}
       PYTHONPATH: /app
@@ -111,8 +113,8 @@ services:
         condition: service_healthy
       embedding_model:
         condition: service_started # or service_healthy if you add a healthcheck
-      vector_db: # <--- Add dependency on vector_db
-        condition: service_started # or service_healthy
+      vector_db:
+        condition: service_healthy
     environment:
       # For database connection, matching what config/config.py expects
       POSTGRES_HOST: db
@@ -128,6 +130,12 @@ services:
       PYTHONPATH: /app # Assuming backend code is in /app/src and this helps imports
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s # Give backend time to initialize before first check
     networks:
       - smartshop_net
     volumes:
@@ -135,16 +143,17 @@ services:
       - ./config:/app/config
       - embedding_model_cache:${MODEL_CACHE_FOLDER}
 
-#  frontend:
-#    build:
-#      context: ./frontend
-#      dockerfile: Dockerfile
-#    ports:
-#      - "80:80" # Or whatever port your frontend uses, e.g., 3000:80 if Next.js uses 3000
-#    networks:
-#      - smartshop_net
-#    depends_on:
-#      - backend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    networks:
+      - smartshop_net
+    depends_on: # Updated to wait for backend to be healthy
+      backend:
+        condition: service_healthy
 
 networks:
   smartshop_net:

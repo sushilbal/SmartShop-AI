@@ -5,7 +5,8 @@ import logging
 
 from src.models import Review, ReviewCreate, ReviewDB, ProductDB
 from src.embedding_sync import update_review_in_qdrant, delete_review_from_qdrant
-from src.dependencies import get_db, get_qdrant_db_client 
+from src.dependencies import get_db, get_qdrant_db_client
+from src.utils import get_obj_or_404
 
 router = APIRouter(
     prefix="/reviews",
@@ -24,10 +25,7 @@ def read_reviews(skip: int = 0, limit: int = 100, product_id: Optional[str] = No
 
 @router.get("/{review_id}", response_model=Review)
 def read_review(review_id: int, db: Session = Depends(get_db)):
-    review = db.query(ReviewDB).filter(ReviewDB.review_id == review_id, ReviewDB.is_deleted == False).first()
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
-    return review
+    return get_obj_or_404(db, ReviewDB, review_id, action="read")
 
 @router.post("/", response_model=Review)
 def create_review(
@@ -36,9 +34,13 @@ def create_review(
     db: Session = Depends(get_db),
     q_client = Depends(get_qdrant_db_client)
 ):
-    product = db.query(ProductDB).filter(ProductDB.product_id == review.product_id, ProductDB.is_deleted == False).first()
-    if not product:
-        raise HTTPException(status_code=400, detail="Product not found")
+    # Validate product existence
+    try:
+        get_obj_or_404(db, ProductDB, review.product_id, action="assign to review")
+    except HTTPException as e:
+        if e.status_code == 404: # Product not found
+            raise HTTPException(status_code=400, detail=f"Product with ID '{review.product_id}' not found to associate with the review.")
+        raise # Re-raise other potential errors
 
     db_review = ReviewDB(**review.model_dump())
     db.add(db_review)
@@ -56,13 +58,15 @@ def update_review(
     db: Session = Depends(get_db),
     q_client = Depends(get_qdrant_db_client)
 ):
-    db_review = db.query(ReviewDB).filter(ReviewDB.review_id == review_id, ReviewDB.is_deleted == False).first()
-    if not db_review:
-        raise HTTPException(status_code=404, detail="Review not found")
+    db_review = get_obj_or_404(db, ReviewDB, review_id, action="update")
+
     if review.product_id != db_review.product_id:
-        product = db.query(ProductDB).filter(ProductDB.product_id == review.product_id, ProductDB.is_deleted == False).first()
-        if not product:
-            raise HTTPException(status_code=400, detail="New product_id for review not found")
+        try:
+            get_obj_or_404(db, ProductDB, review.product_id, action="assign to review")
+        except HTTPException as e:
+            if e.status_code == 404: # New product not found
+                raise HTTPException(status_code=400, detail=f"New product_id '{review.product_id}' for review not found.")
+            raise
 
     for key, value in review.model_dump(exclude_unset=True).items():
         setattr(db_review, key, value)
@@ -79,9 +83,7 @@ def delete_review(
     db: Session = Depends(get_db),
     q_client = Depends(get_qdrant_db_client)
 ):
-    db_review = db.query(ReviewDB).filter(ReviewDB.review_id == review_id, ReviewDB.is_deleted == False).first()
-    if not db_review:
-        raise HTTPException(status_code=404, detail="Review not found")
+    db_review = get_obj_or_404(db, ReviewDB, review_id, action="delete")
     db_review.is_deleted = True
     db.commit()
     db.refresh(db_review)

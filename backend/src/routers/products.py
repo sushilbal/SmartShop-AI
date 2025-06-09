@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from src.models import Product, ProductCreate, ProductDB
 from src.embedding_sync import update_product_in_qdrant, delete_product_from_qdrant
 from src.dependencies import get_db, get_qdrant_db_client
+from src.utils import get_obj_or_404
 
 router = APIRouter(
     prefix="/products",
@@ -23,10 +24,7 @@ def read_products(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)
 
 @router.get("/{product_id}", response_model=Product)
 def read_product(product_id: str, db: Session = Depends(get_db)):
-    product = db.query(ProductDB).filter(ProductDB.product_id == product_id, ProductDB.is_deleted == False).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return product
+    return get_obj_or_404(db, ProductDB, product_id, action="read")
 
 @router.post("/", response_model=Product)
 def create_product(
@@ -58,9 +56,7 @@ def update_product(
     db: Session = Depends(get_db),
     q_client = Depends(get_qdrant_db_client)
 ):
-    db_product = db.query(ProductDB).filter(ProductDB.product_id == product_id, ProductDB.is_deleted == False).first()
-    if not db_product:
-        raise HTTPException(status_code=404, detail="Product not found")
+    db_product = get_obj_or_404(db, ProductDB, product_id, action="update")
     for key, value in product.model_dump(exclude_unset=True).items():
         setattr(db_product, key, value)
     db.commit()
@@ -76,9 +72,7 @@ def delete_product(
     db: Session = Depends(get_db),
     q_client = Depends(get_qdrant_db_client)
 ):
-    db_product = db.query(ProductDB).filter(ProductDB.product_id == product_id, ProductDB.is_deleted == False).first()
-    if not db_product:
-        raise HTTPException(status_code=404, detail="Product not found")
+    db_product = get_obj_or_404(db, ProductDB, product_id, action="delete")
     db_product.is_deleted = True
     db.commit()
     db.refresh(db_product)

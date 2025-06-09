@@ -5,7 +5,8 @@ import logging
 
 from src.models import StorePolicy, StorePolicyCreate, StorePolicyDB
 from src.embedding_sync import update_policy_in_qdrant, delete_policy_from_qdrant
-from src.dependencies import get_db, get_qdrant_db_client 
+from src.dependencies import get_db, get_qdrant_db_client
+from src.utils import get_obj_or_404
 
 router = APIRouter(
     prefix="/policies",
@@ -21,10 +22,7 @@ def read_policies(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)
 
 @router.get("/{policy_id}", response_model=StorePolicy)
 def read_policy(policy_id: int, db: Session = Depends(get_db)):
-    policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
-    if not policy:
-        raise HTTPException(status_code=404, detail="Policy not found")
-    return policy
+    return get_obj_or_404(db, StorePolicyDB, policy_id, action="read")
 
 @router.post("/", response_model=StorePolicy)
 def create_policy(
@@ -49,9 +47,7 @@ def update_policy(
     db: Session = Depends(get_db),
     q_client = Depends(get_qdrant_db_client)
 ):
-    db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
-    if not db_policy:
-        raise HTTPException(status_code=404, detail="Policy not found")
+    db_policy = get_obj_or_404(db, StorePolicyDB, policy_id, action="update")
     for key, value in policy.model_dump(exclude_unset=True).items():
         setattr(db_policy, key, value)
     db.commit()
@@ -67,9 +63,7 @@ def delete_policy(
     db: Session = Depends(get_db),
     q_client = Depends(get_qdrant_db_client)
 ):
-    db_policy = db.query(StorePolicyDB).filter(StorePolicyDB.policy_id == policy_id, StorePolicyDB.is_deleted == False).first()
-    if not db_policy:
-        raise HTTPException(status_code=404, detail="Policy not found")
+    db_policy = get_obj_or_404(db, StorePolicyDB, policy_id, action="delete")
     db_policy.is_deleted = True
     db.commit()
     db.refresh(db_policy)
