@@ -1,9 +1,15 @@
 FROM python:3.11-slim-bookworm
 
+# Install curl for healthchecks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
+
+# Install any needed packages specified in requirements.txt
+# Using --no-cache-dir to reduce image size
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 # Copy the rest of the backend application code

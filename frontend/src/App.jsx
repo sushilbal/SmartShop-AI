@@ -2,8 +2,8 @@ import { useState } from 'react';
 import axios from 'axios';
 import './App.css';
 
-// The backend URL as seen from the user's browser
-const API_URL = 'http://localhost:8000';
+// The backend URL is now relative, so it will use the same host as the frontend
+const API_BASE_URL = '/api';
 
 function App() {
   const [query, setQuery] = useState('');
@@ -22,13 +22,14 @@ function App() {
     setResults(null);
 
     try {
-      const response = await axios.post(`${API_URL}/search/`, {
+      // The URL now correctly points to the Nginx proxy route
+      const response = await axios.post(`${API_BASE_URL}/search/`, {
         query: query,
         limit: 10,
       });
       setResults(response.data);
     } catch (err) {
-      setError('Error: Could not connect to the backend. Please ensure all services are running.');
+      setError('Error: Could not connect to the backend. Please ensure all services are running and check the browser console for more details.');
       console.error(err);
     } finally {
       setLoading(false);

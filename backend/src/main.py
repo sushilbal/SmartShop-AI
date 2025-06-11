@@ -28,6 +28,11 @@ from src.agents.faq_policy_agent import create_faq_policy_graph
 app = FastAPI()
 logger = logging.getLogger(__name__)
 
+# Define health check endpoint immediately after app initialization
+@app.get("/health", status_code=200, include_in_schema=False) # exclude from OpenAPI docs
+async def health_check():
+    return {"status": "healthy"}
+
 # --- LangGraph App Initialization ---
 # Compile the graph once on app startup.
 faq_policy_agent_graph = None
