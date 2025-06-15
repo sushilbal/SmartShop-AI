@@ -14,17 +14,23 @@ from config.config import (
 from src.models import (
     SearchQuery, SearchResponse, SearchResultItem, Product as ProductSchema
 )
-from datetime import datetime
+import uuid # For generating session IDs
 import logging # For logging Qdrant sync errors
 from sqlalchemy.exc import IntegrityError
 from src.routers import products, reviews, policies # Import the new routers
 from src.dependencies import get_db, get_qdrant_db_client # Import dependencies
 from src.embedding_sync import get_embeddings_for_texts
-from src.llm_handler import get_llm_rag_response
-# Assuming faq_policy_agent.py exists and is set up correctly
+from src.llm_handler import get_llm_response # Changed from get_llm_rag_response
 from src.agents.faq_policy_agent import create_faq_policy_graph
+# Import the new agent graph creators
+from src.agents.review_search_agent import create_review_search_graph
+from src.agents.product_search_agent import create_product_search_graph
+from src.agents.router_agent import create_router_agent_graph # Import the router agent
 
 # --- FastAPI App ---
+import redis.asyncio as redis # For aioredis
+import json # For serializing chat history
+from config.config import REDIS_URL # Import REDIS_URL from your config
 app = FastAPI()
 logger = logging.getLogger(__name__)
 
@@ -33,19 +39,60 @@ logger = logging.getLogger(__name__)
 async def health_check():
     return {"status": "healthy"}
 
+# --- Redis Client Initialization ---
+redis_client = None
+
 # --- LangGraph App Initialization ---
 # Compile the graph once on app startup.
-faq_policy_agent_graph = None
+faq_policy_agent_graph = None # For FAQs and store policies
+product_search_agent_graph = None # For product-related semantic searches
+review_search_agent_graph = None # For review-related semantic searches
+router_agent_graph = None # For routing queries
+# Removed: session_memory_store: dict[str, list[dict]] = {}
 
 @app.on_event("startup")
 async def startup_event():
-    global faq_policy_agent_graph
+    global faq_policy_agent_graph, product_search_agent_graph, review_search_agent_graph, router_agent_graph
+    global redis_client # Add redis_client here
+
     try:
         faq_policy_agent_graph = create_faq_policy_graph()
         logger.info("FAQ/Policy LangGraph agent initialized successfully.")
     except Exception as e:
-        logger.error(f"Failed to initialize LangGraph agent on startup: {e}", exc_info=True)
-        # faq_policy_agent_graph will remain None, endpoint should handle this
+        logger.error(f"Failed to initialize FAQ/Policy LangGraph agent on startup: {e}", exc_info=True)
+
+    try:
+        product_search_agent_graph = create_product_search_graph()
+        logger.info("Product Search LangGraph agent initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Product Search LangGraph agent on startup: {e}", exc_info=True)
+    try:
+        review_search_agent_graph = create_review_search_graph()
+        logger.info("Review Search LangGraph agent initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Review Search LangGraph agent on startup: {e}", exc_info=True)
+    
+    try:
+        router_agent_graph = create_router_agent_graph()
+        logger.info("Router LangGraph agent initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Router LangGraph agent on startup: {e}", exc_info=True)
+    
+    # Initialize Redis client
+    try:
+        redis_client = await redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+        await redis_client.ping() # Test connection
+        logger.info(f"Successfully connected to Redis at {REDIS_URL} for session storage.")
+    except Exception as e:
+        logger.error(f"Failed to connect to Redis at {REDIS_URL}: {e}", exc_info=True)
+        redis_client = None # Ensure it's None if connection fails
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global redis_client
+    if redis_client:
+        await redis_client.close()
+        logger.info("Redis connection closed.")
 
 # Include the routers
 app.include_router(products.router)
@@ -88,6 +135,24 @@ async def search_items(
     user_query_text = search_query.query
     logger.info(f"Received search query: '{user_query_text}'")
 
+    session_id = search_query.session_id
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        logger.info(f"No session_id provided, generated new one: {session_id}")
+    
+    current_session_history = []
+    if redis_client:
+        try:
+            history_json = await redis_client.get(f"session:{session_id}")
+            if history_json:
+                current_session_history = json.loads(history_json)
+            logger.info(f"Session {session_id} loaded with {len(current_session_history)} previous messages from Redis.")
+        except Exception as e:
+            logger.error(f"Error fetching history from Redis for session {session_id}: {e}", exc_info=True)
+            # Proceed with empty history if Redis fails
+    else:
+        logger.warning("Redis client not available. Session history will not be persisted for this request.")
+
     if is_product_id_format(user_query_text):
         # ... (your existing product ID lookup logic) ...
         # Example:
@@ -95,6 +160,7 @@ async def search_items(
         product_db_item = db.query(ProductDB).filter(ProductDB.product_id == user_query_text, ProductDB.is_deleted == False).first()
         if product_db_item:
             return SearchResponse(
+                session_id_returned=session_id, # Return session_id
                 query_type="product_id_lookup",
                 direct_product_result=ProductSchema.model_validate(product_db_item),
                 results=[],
@@ -103,17 +169,66 @@ async def search_items(
         else:
             logger.info(f"No product found with ID '{user_query_text}'. Proceeding with agent-based search.")
     
-    # If not a product ID, or direct lookup failed, use the LangGraph agent
-    global faq_policy_agent_graph # Use the globally initialized graph
-    if faq_policy_agent_graph:
-        initial_state = {"original_query": user_query_text}
-        # LangGraph's .ainvoke for async execution
-        final_state = await faq_policy_agent_graph.ainvoke(initial_state)
-        
-        # Assuming final_state["final_response"] matches the SearchResponse structure
-        # You might need to explicitly construct SearchResponse here
-        response_data = final_state.get("final_response", {})
-        return SearchResponse(**response_data) # Unpack the dict into the Pydantic model
+    # --- Agent Routing ---
+    if not router_agent_graph:
+        logger.error("Router agent not initialized. Cannot proceed with agent-based search.")
+        raise HTTPException(status_code=503, detail="Search routing service is unavailable.")
+
+    try:
+        router_initial_state = {"original_query": user_query_text}
+        router_final_state = await router_agent_graph.ainvoke(router_initial_state)
+        chosen_agent_key = router_final_state.get("chosen_agent_name")
+        logger.info(f"Router agent chose: '{chosen_agent_key}' for query: '{user_query_text}'")
+    except Exception as e:
+        logger.error(f"Error invoking router agent: {e}", exc_info=True)
+        # Fallback to a default agent or raise error
+        chosen_agent_key = "product_search" # Default fallback
+        logger.warning(f"Router agent failed, defaulting to '{chosen_agent_key}' for query: '{user_query_text}'")
+
+    # Map the chosen agent key to the actual graph instance
+    agent_map = {
+        "product_search": (product_search_agent_graph, "Product Search"),
+        "review_search": (review_search_agent_graph, "Review Search"),
+        "faq_policy": (faq_policy_agent_graph, "FAQ/Policy")
+    }
+
+    chosen_agent_graph = None
+    agent_name = ""
+    if chosen_agent_key in agent_map:
+        chosen_agent_graph, agent_name = agent_map[chosen_agent_key]
     else:
-        logger.error("FAQ/Policy agent (LangGraph app) not initialized or startup failed.")
-        raise HTTPException(status_code=503, detail="Search agent is not available.")
+        logger.warning(f"Unknown agent key '{chosen_agent_key}' from router. Defaulting to Product Search.")
+        chosen_agent_graph, agent_name = agent_map["product_search"] # Default if key is somehow invalid
+
+    if chosen_agent_graph:
+        try:
+            # Pass the current session's chat history to the chosen agent
+            initial_state = {
+                "original_query": user_query_text,
+                "chat_history": current_session_history # Pass loaded history
+            }
+            # LangGraph's .ainvoke for async execution
+            final_state = await chosen_agent_graph.ainvoke(initial_state)
+            
+            # Save the updated chat history back to the session store
+            updated_session_history = final_state.get("chat_history", [])
+            if redis_client:
+                try:
+                    # Store for 1 hour (3600 seconds), adjust as needed
+                    await redis_client.set(f"session:{session_id}", json.dumps(updated_session_history), ex=3600) 
+                    logger.info(f"Session {session_id} history updated in Redis with {len(updated_session_history)} messages.")
+                except Exception as e:
+                    logger.error(f"Error saving history to Redis for session {session_id}: {e}", exc_info=True)
+            
+            # Assuming final_state["final_response"] matches the SearchResponse structure
+            response_data = final_state.get("final_response", {})
+            # Ensure query_type is set if the agent didn't set it or set it differently
+            if "query_type" not in response_data or not response_data["query_type"]:
+                 response_data["query_type"] = f"{agent_name.lower().replace('/', '_').replace(' ', '_')}_rag_langgraph" # Default query_type
+            return SearchResponse(**response_data, session_id_returned=session_id) # Unpack and add session_id
+        except Exception as e:
+            logger.error(f"Error invoking {agent_name} agent: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error processing search with {agent_name} agent.")
+    else:
+        logger.error(f"{agent_name} agent (LangGraph app) not initialized or startup failed.")
+        raise HTTPException(status_code=503, detail=f"{agent_name} search agent is not available.")

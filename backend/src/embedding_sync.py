@@ -10,7 +10,6 @@ from config.config import (
     get_embedding_model # Import the centralized model loader
 )
 
-
 logger = logging.getLogger(__name__)
 
 def get_embeddings_for_texts(texts: List[str]) -> Optional[List[List[float]]]:

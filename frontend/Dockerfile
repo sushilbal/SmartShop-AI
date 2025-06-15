@@ -7,9 +7,16 @@ COPY package*.json ./
 
 RUN npm install
 
+
 COPY . .
 
+# Run the build and then list the contents to verify
 RUN npm run build
+
+
+# ---- Debug: List contents of /app/dist in the builder stage ----
+RUN echo "Listing contents of /app/dist after build:" && ls -lA /app/dist
+RUN echo "Listing contents of /app/dist/assets (if it exists):" && (ls -lA /app/dist/assets || echo "/app/dist/assets directory not found")
 
 
 # ---- Stage 2: Serve the application with Nginx ----

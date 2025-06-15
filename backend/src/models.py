@@ -83,6 +83,7 @@ class StorePolicy(StorePolicyBase):
 # --- Search Schemas ---
 class SearchQuery(BaseModel):
     query: str = Field(..., min_length=1, description="The search query text.")
+    session_id: Optional[str] = Field(None, description="Optional session ID for maintaining conversation history.")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results to return.")
     # Optional: Add filters like specific collections to search
     # search_in_products: bool = True
@@ -97,6 +98,7 @@ class SearchResultItem(BaseModel):
 
 class SearchResponse(BaseModel):
     query_type: str = Field(..., description="Type of query processed (e.g., 'product_id_lookup', 'semantic_search_rag').")
+    session_id_returned: Optional[str] = Field(None, description="The session ID used for this interaction.")
     llm_answer: Optional[str] = Field(None, description="LLM generated answer for semantic search queries.")
     direct_product_result: Optional[Product] = Field(None, description="Direct product result if query was a product ID.")
     results: List[SearchResultItem] = Field(default_factory=list, description="List of source documents or search results.")
@@ -148,4 +150,3 @@ class StorePolicyDB(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     is_deleted = Column(Boolean, default=False, nullable=False)
-

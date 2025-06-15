@@ -10,7 +10,7 @@ COPY requirements.txt .
 
 # Install any needed packages specified in requirements.txt
 # Using --no-cache-dir to reduce image size
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
+RUN pip install --upgrade pip && pip install --no-cache-dir --upgrade -r requirements.txt
 
 # Copy the rest of the backend application code
 # This will copy the contents of host:backend/src/ to container:/app/src/

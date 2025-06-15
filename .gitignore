@@ -6,4 +6,11 @@ data/raw/*
 .DS_Store
 .env
 .smartshop
-
+# Node.js and frontend specific ignores
+/frontend/node_modules
+/frontend/dist
+/frontend/.env.local
+/frontend/.env.*.local
+/frontend/npm-debug.log*
+/frontend/yarn-debug.log*
+/frontend/yarn-error.log*

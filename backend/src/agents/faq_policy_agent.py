@@ -1,17 +1,14 @@
-from typing import List, TypedDict, Annotated, Sequence
+from typing import List, TypedDict, Annotated, Sequence, Optional
 import operator
 import httpx
 
 from langgraph.graph import StateGraph, END
 
 # Import your existing helpers (you might refactor them slightly to fit LangGraph nodes)
-# from src.embedding_sync import get_embeddings_for_texts # Replaced by HTTP call
-from src.llm_handler import get_llm_rag_response # You might adapt this or use LangChain's LLM wrapper
+from src.llm_handler import get_llm_response # Changed from get_llm_rag_response
 from src.dependencies import get_qdrant_db_client # To get a Qdrant client instance
 from config.config import (
     VECTOR_DB_COLLECTION_POLICIES,
-    VECTOR_DB_COLLECTION_REVIEWS, # If FAQ can also search reviews
-    VECTOR_DB_COLLECTION_PRODUCTS, # If FAQ can also search products
     EMBEDDING_SERVICE_URL # Assuming this is defined in your config e.g., "http://localhost:8001/embed/"
 )
 # You'll need to pass the Qdrant client to the nodes or make it accessible.
@@ -22,7 +19,8 @@ class FaqPolicyAgentState(TypedDict):
     query_embedding: List[float]
     retrieved_documents: List[dict] # List of Qdrant hit payloads or formatted docs
     context_for_llm: str
-    llm_answer: str
+    llm_answer: Optional[str] # Can be None if LLM fails
+    chat_history: List[dict] # To store conversation messages [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
     final_response: dict # Could be your SearchResponse Pydantic model structure
 
 # --- Node Functions ---
@@ -44,14 +42,14 @@ async def embed_query_node(state: FaqPolicyAgentState): # Changed to async
                     return {"query_embedding": embedding}
             
             print(f"Error: Unexpected response format from embedding service: {result}")
-            return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": "Error embedding query due to unexpected response format."}
+            return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": "Error embedding query due to unexpected response format.", "llm_answer": None}
 
         except httpx.RequestError as e:
             print(f"Error calling embedding service: {e}")
-            return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": f"Error embedding query: {e}"}
+            return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": f"Error embedding query: {e}", "llm_answer": None}
         except Exception as e:
             print(f"An unexpected error occurred during query embedding: {e}")
-        return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": "Error embedding query."}
+            return {"query_embedding": [], "retrieved_documents": [], "context_for_llm": "Error embedding query.", "llm_answer": None}
 
 def search_qdrant_node(state: FaqPolicyAgentState):
     print("--- Node: Searching Qdrant ---")
@@ -103,10 +101,34 @@ async def call_llm_node(state: FaqPolicyAgentState): # Make it async if get_llm_
     print("--- Node: Calling LLM ---")
     query = state["original_query"]
     context = state["context_for_llm"]
-    # Adapt get_llm_rag_response or use LangChain's ChatOpenAI directly
-    # For simplicity, assuming get_llm_rag_response can be used here
-    answer = await get_llm_rag_response(query, [context]) # Pass context as a list of one item
-    return {"llm_answer": answer}
+    current_chat_history = state.get("chat_history", []) # Get existing history
+
+    # Construct the RAG prompt for the current turn
+    rag_prompt_content = f"""Based on the following context, please answer the user's question.
+If the context doesn't directly answer the question, please state that you couldn't find specific information in the provided documents.
+
+Context:
+{context}
+
+User Question: {query}
+
+Answer:"""
+
+    # Prepare messages for the LLM: history + system prompt + current RAG user query
+    prompt_messages = current_chat_history + [
+        {"role": "system", "content": "You are a helpful assistant for an e-commerce store, providing concise and relevant answers based on store policies and FAQs."},
+        {"role": "user", "content": rag_prompt_content}
+    ]
+
+    answer = await get_llm_response(prompt_messages)
+
+    # Update chat history
+    updated_history = current_chat_history + [
+        {"role": "user", "content": query}, # Add the original user query to history
+        {"role": "assistant", "content": answer if answer else "Sorry, I could not generate a response."}
+    ]
+
+    return {"llm_answer": answer, "chat_history": updated_history}
 
 def format_final_response_node(state: FaqPolicyAgentState):
     print("--- Node: Formatting Final Response ---")

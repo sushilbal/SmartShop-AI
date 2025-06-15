@@ -62,6 +62,12 @@ VECTOR_DB_COLLECTION_POLICIES = os.getenv('VECTOR_DB_COLLECTION_POLICIES', 'poli
 SENTENCE_TRANSFORMER_MODEL = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_DEFAULT_MODEL = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-3.5-turbo")
+
+# --- Redis Configuration ---
+REDIS_HOST = os.getenv("REDIS_HOST", "redis") # Default to service name in Docker
+REDIS_PORT = os.getenv("REDIS_PORT", "6379")
+REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}"
 
 # --- Embedding Model Configuration and Loading ---
 # Define a cache folder for sentence-transformers models within the container
@@ -113,8 +119,17 @@ def get_qdrant_client() -> QdrantClient:
         # so they should be available here.
         try:
             # Use print for early logging before standard logging might be fully configured
-            print(f"Initializing Qdrant client for host {VECTOR_DB_HOST}:{VECTOR_DB_PORT}...")
-            _cached_qdrant_client = QdrantClient(host=VECTOR_DB_HOST, port=VECTOR_DB_PORT)
+            print(f"Attempting to initialize Qdrant client for host {VECTOR_DB_HOST}, configured port {VECTOR_DB_PORT}...")
+            if VECTOR_DB_PORT == 6334: # Standard gRPC port
+                print(f"Using gRPC port for Qdrant client: {VECTOR_DB_PORT}")
+                _cached_qdrant_client = QdrantClient(host=VECTOR_DB_HOST, grpc_port=VECTOR_DB_PORT)
+            elif VECTOR_DB_PORT == 6333: # Standard HTTP/REST port
+                print(f"Using HTTP/REST port for Qdrant client: {VECTOR_DB_PORT}")
+                _cached_qdrant_client = QdrantClient(host=VECTOR_DB_HOST, port=VECTOR_DB_PORT)
+            else:
+                # Fallback or if a full URL is preferred and configured differently
+                print(f"Warning: Qdrant port {VECTOR_DB_PORT} is not standard 6333 or 6334. Assuming HTTP/REST on this port via URL.")
+                _cached_qdrant_client = QdrantClient(url=f"http://{VECTOR_DB_HOST}:{VECTOR_DB_PORT}")
             _cached_qdrant_client.get_collections() # A simple way to test the connection
             print("Qdrant client initialized and connected successfully.")
         except Exception as e:

@@ -1,6 +1,6 @@
 import logging
 from typing import List, Optional
-
+from config.config import OPENAI_DEFAULT_MODEL # Import from config
 from config.config import OPENAI_API_KEY
 
 # Attempt to import openai and initialize client
@@ -11,16 +11,15 @@ try:
         # It's good practice to initialize the client once.
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY) # Use AsyncOpenAI for async calls
         OPENAI_CLIENT_INITIALIZED = True
-        MODEL_TO_USE = "gpt-3.5-turbo" # Default model
+        # MODEL_TO_USE is now OPENAI_DEFAULT_MODEL from config
     else:
         client = None
         OPENAI_CLIENT_INITIALIZED = False
-        MODEL_TO_USE = None
+        # OPENAI_DEFAULT_MODEL would be None if not set
 except ImportError:
     openai = None # So that type hints don't break if library is missing
     client = None
     OPENAI_CLIENT_INITIALIZED = False
-    MODEL_TO_USE = None
 
 logger = logging.getLogger(__name__)
 
@@ -31,43 +30,35 @@ if not OPENAI_CLIENT_INITIALIZED:
         "LLM features will be disabled."
     )
 
-async def get_llm_rag_response(query: str, context_chunks: List[str], model: Optional[str] = None) -> Optional[str]:
+async def get_llm_response(
+    prompt_messages: List[dict], # Expects a list of messages like [{"role": "system", ...}, {"role": "user", ...}]
+    model: Optional[str] = None,
+    temperature: float = 0.3 # Default temperature
+) -> Optional[str]:
     """
-    Generates a response from an LLM using retrieved context (RAG).
+    Generates a response from an LLM based on a list of prompt messages.
     """
     if not OPENAI_CLIENT_INITIALIZED or client is None:
         logger.error("OpenAI client not initialized. Cannot generate LLM response.")
         return "LLM service is not configured or available."
 
-    selected_model = model if model else MODEL_TO_USE
+    selected_model = model if model else OPENAI_DEFAULT_MODEL # Use config default
     if not selected_model: # Should not happen if OPENAI_CLIENT_INITIALIZED is True
         logger.error("No OpenAI model specified or configured.")
         return "LLM model not specified."
 
-    context_text = "\n\n".join(context_chunks) if context_chunks else "No specific context found in our documents for your query."
-
-    prompt = f"""Based on the following context, please answer the user's question.
-If the context doesn't directly answer the question, please state that you couldn't find specific information in the provided documents.
-
-Context:
-{context_text}
-
-User Question: {query}
-
-Answer:"""
-
     try:
-        logger.info(f"Sending prompt to OpenAI model {selected_model} for query: '{query[:50]}...'")
+        # Log the last user message for brevity if history is long
+        log_query_snippet = prompt_messages[-1]['content'][:70] if prompt_messages and prompt_messages[-1]['role'] == 'user' else "N/A"
+        logger.info(f"Sending prompt to OpenAI model {selected_model}. Last user message snippet: '{log_query_snippet}...'")
+        
         response = await client.chat.completions.create(
             model=selected_model,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant for an e-commerce store, providing concise and relevant answers."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3 # Adjust for more factual/less creative responses
+            messages=prompt_messages,
+            temperature=temperature
         )
         answer = response.choices[0].message.content.strip()
-        logger.info(f"Received LLM response for query: '{query[:50]}...'")
+        logger.info(f"Received LLM response. Snippet: '{answer[:70]}...'")
         return answer
     except openai.APIError as e: # More specific error handling for OpenAI API errors
         logger.error(f"OpenAI API Error: {e.status_code} - {e.message}", exc_info=True)
@@ -75,3 +66,36 @@ Answer:"""
     except Exception as e:
         logger.error(f"Unexpected error calling OpenAI API: {e}", exc_info=True)
         return "Sorry, I encountered an unexpected error trying to generate an answer."
+
+async def get_llm_classification_response(
+    prompt_messages: List[dict], # Expects a list of messages like [{"role": "system", ...}, {"role": "user", ...}]
+    model: Optional[str] = None,
+    temperature: float = 0.0 # Lower temperature for more deterministic classification
+) -> Optional[str]:
+    """
+    Gets a classification response from an LLM.
+    Responds with the raw text output, expecting the prompt to guide the LLM
+    to output a specific class name or identifier.
+    """
+    if not OPENAI_CLIENT_INITIALIZED or client is None:
+        logger.error("OpenAI client not initialized. Cannot generate LLM classification.")
+        return None # Or raise an error
+
+    selected_model = model if model else OPENAI_DEFAULT_MODEL # Use config default
+    if not selected_model:
+        logger.error("No OpenAI model specified or configured for classification.")
+        return None
+
+    try:
+        logger.info(f"Sending classification prompt to OpenAI model {selected_model}...")
+        response = await client.chat.completions.create(
+            model=selected_model,
+            messages=prompt_messages,
+            temperature=temperature
+        )
+        classification_result = response.choices[0].message.content.strip()
+        logger.info(f"Received LLM classification: '{classification_result}'")
+        return classification_result
+    except Exception as e:
+        logger.error(f"Unexpected error calling OpenAI API for classification: {e}", exc_info=True)
+        return None
