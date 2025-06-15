@@ -2,13 +2,14 @@ fastapi
 uvicorn[standard]
 SQLAlchemy
 psycopg2-binary
-python-dotenv # If your backend/app/config.py uses it
+python-dotenv
 httpx
 qdrant_client
 langchain>=0.1.0
 langgraph>=0.0.20
-langchain-openai # If you haven't added this already for llm_handler.py
+langchain-openai
 openai
 torch
 sentence_transformers
-# Add any other backend-specific dependencies here
+pysbd
+redis>=4.2
