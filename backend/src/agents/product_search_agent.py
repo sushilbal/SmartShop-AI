@@ -77,6 +77,8 @@ def search_qdrant_products_node(state: ProductSearchAgentState):
         print(f"Error searching Qdrant for products: {e}")
     return {"retrieved_products": products}
 
+# In backend/src/agents/product_search_agent.py
+
 def format_product_context_node(state: ProductSearchAgentState):
     print("--- Product Agent: Formatting Product Context ---")
     documents = state["retrieved_products"]
@@ -86,7 +88,9 @@ def format_product_context_node(state: ProductSearchAgentState):
         name = payload.get("name", "N/A")
         brand = payload.get("brand", "N/A")
         category = payload.get("category", "N/A")
-        description_snippet = payload.get("source_text_snippet", "") # Assuming this is the embedded text
+        # --- CHANGE THIS LINE ---
+        # Change source_text_snippet to chunk_text to match what's in Qdrant
+        description_snippet = payload.get("chunk_text", "") # Correct key is "chunk_text"
         context_chunks.append(f"Product: {name}, Brand: {brand}, Category: {category}. Details: {description_snippet}")
     
     context_str = "\n\n".join(filter(None, context_chunks))
@@ -94,24 +98,61 @@ def format_product_context_node(state: ProductSearchAgentState):
         context_str = "No specific product information found for your query."
     return {"context_for_llm": context_str}
 
+# async def call_llm_product_node(state: ProductSearchAgentState):
+#     print("--- Product Agent: Calling LLM for Products ---")
+#     query = state["original_query"]
+#     context = state["context_for_llm"]
+#     current_chat_history = state.get("chat_history", [])
+
+#     rag_prompt_content = f"""Based on the following product information, please answer the user's question.
+# If the context doesn't directly answer the question, state that you couldn't find specific information in the provided product details.
+
+# Product Information Context:
+# {context}
+
+# User Question: {query}
+
+# Answer:"""
+
+#     prompt_messages = current_chat_history + [
+#         {"role": "system", "content": "You are a helpful shopping assistant. Answer questions based on the provided product information."},
+#         {"role": "user", "content": rag_prompt_content}
+#     ]
+
+#     answer = await get_llm_response(prompt_messages)
+
+#     updated_history = current_chat_history + [
+#         {"role": "user", "content": query},
+#         {"role": "assistant", "content": answer if answer else "Sorry, I could not generate a response for your product query."}
+#     ]
+#     return {"llm_answer": answer, "chat_history": updated_history}
+
+# In backend/src/agents/product_search_agent.py
+
 async def call_llm_product_node(state: ProductSearchAgentState):
     print("--- Product Agent: Calling LLM for Products ---")
     query = state["original_query"]
     context = state["context_for_llm"]
     current_chat_history = state.get("chat_history", [])
 
-    rag_prompt_content = f"""Based on the following product information, please answer the user's question.
-If the context doesn't directly answer the question, state that you couldn't find specific information in the provided product details.
+    # --- THIS IS THE CORRECTED, MORE EFFECTIVE PROMPT ---
+    rag_prompt_content = f"""You are a helpful e-commerce shopping assistant.
+Your goal is to help the user find the products they are looking for based on their request.
+Use the "Product Information Context" below, which contains the results of a database search, to help the user.
+
+Summarize the products from the context that are relevant to the user's question.
+Present the options clearly. If there are multiple products, you can list them.
+If the context is empty or does not contain relevant information, simply state that you couldn't find any specific products matching their request.
 
 Product Information Context:
 {context}
 
 User Question: {query}
 
-Answer:"""
+Helpful Summary:"""
 
     prompt_messages = current_chat_history + [
-        {"role": "system", "content": "You are a helpful shopping assistant. Answer questions based on the provided product information."},
+        {"role": "system", "content": "You are a helpful shopping assistant designed to summarize and present product options to users."},
         {"role": "user", "content": rag_prompt_content}
     ]
 

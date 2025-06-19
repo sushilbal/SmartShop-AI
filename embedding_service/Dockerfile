@@ -1,21 +1,60 @@
 # SmartShop-AI/embedding_service/Dockerfile
+
+# --- Stage 1: The "builder" stage ---
+# We use this temporary stage to download the correct, Linux-compatible wheels
+FROM python:3.11-slim-bookworm as builder
+
+WORKDIR /app
+
+# Upgrade pip
+RUN python -m pip install --upgrade pip
+
+# Download wheels with added retries and a longer timeout to handle network instability
+RUN python -m pip download \
+    --dest /app/wheels \
+    --timeout=100 \
+    --retries=5 \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cpu
+
+
+# --- Stage 2: The "final" stage ---
+# This is our actual, clean application image
 FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# Using CPU version of PyTorch for broader compatibility initially
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir sentence-transformers fastapi uvicorn "transformers>=4.30.0" pydantic python-dotenv qdrant-client
+# Upgrade pip
+RUN python -m pip install --upgrade pip
 
-# Declare an argument for the model cache folder, with a default value
+# Copy the pre-downloaded wheels from the "builder" stage
+COPY --from=builder /app/wheels /app/wheels
+
+# Install PyTorch from the local, compatible wheels
+RUN python -m pip install \
+    --no-cache-dir \
+    --no-index \
+    --find-links=/app/wheels \
+    torch torchvision torchaudio
+
+# Install the rest of the smaller dependencies
+RUN python -m pip install \
+    --no-cache-dir \
+    sentence-transformers \
+    fastapi \
+    uvicorn \
+    "transformers>=4.30.0" \
+    pydantic \
+    python-dotenv \
+    qdrant-client
+
+# --- The rest of the file is the same ---
+
 ARG MODEL_CACHE_FOLDER_ARG=/app/model_cache
 
-# Set Hugging Face cache environment variables.
-# These tell the libraries where to download and cache models and other assets.
 ENV HF_HOME=${MODEL_CACHE_FOLDER_ARG}
 ENV TRANSFORMERS_CACHE=${MODEL_CACHE_FOLDER_ARG}
-# Create the cache directory and set permissions
-# This ensures the directory exists and is writable by the user inside the container
+
 RUN mkdir -p ${HF_HOME} && chmod -R 777 ${HF_HOME}
 
 COPY ./embedding_service/main.py /app/main.py

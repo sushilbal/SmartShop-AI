@@ -1,13 +1,13 @@
 # Python dependencies for the project
-fastapi
-streamlit
-openai
-pydantic
-uvicorn[standard]
-psycopg2-binary
-python-dotenv
-requests
-SQLAlchemy
-qdrant-client~=1.9.2
-pysbd
-
+fastapi==0.115.12
+openai==1.86.0
+pydantic==1.10.10
+uvicorn[standard]==0.34.3
+psycopg2-binary==2.9.10
+python-dotenv==1.1.0
+httpx==0.28.1
+requests==2.31.0
+SQLAlchemy==2.0.41
+langchain==0.3.25
+qdrant-client==1.14.2
+pysbd==0.3.4

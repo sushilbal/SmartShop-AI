@@ -55,72 +55,67 @@ except ImportError:
         return [text] if text and text.strip() else []
 
 
-# --- Product Vector Operations ---
 def update_product_in_qdrant(
     q_client: QdrantClient,
-    product_id: str, # This is the ID from PostgreSQL
-    product_data: Dict[str, Any] # Data from the Product Pydantic model
+    product_id: str,
+    product_data: Dict[str, Any]
 ):
+    """
+    Handles product updates by creating chunked vector embeddings in Qdrant.
+    This ensures consistency with the bulk data processing script.
+    """
     try:
-        print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): Starting for product_id: {product_id}, data: {product_data}")
         logger.info(f"Updating/creating product {product_id} in Qdrant.")
-        # Ensure we only join non-empty, stripped strings
+        
+        # First, delete any existing chunks for this product to avoid duplicates
+        delete_product_from_qdrant(q_client, product_id)
+
         name_part = product_data.get('name', '').strip()
-        brand_part = f"Brand: {product_data.get('brand', '').strip()}" if product_data.get('brand', '').strip() else ""
-        category_part = f"Category: {product_data.get('category', '').strip()}" if product_data.get('category', '').strip() else ""
+        brand_part = f"Brand: {product_data.get('brand', '').strip()}" if product_data.get('brand') else ""
+        category_part = f"Category: {product_data.get('category', '').strip()}" if product_data.get('category') else ""
         description_part = product_data.get('description', '').strip()
 
-        text_to_embed = ". ".join(filter(None, [name_part, brand_part, category_part, description_part])).strip()
+        text_to_process = ". ".join(filter(None, [name_part, brand_part, category_part, description_part])).strip()
 
-        print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): Text to embed for product {product_id}: '{text_to_embed}'")
-
-        if not text_to_embed:
+        if not text_to_process:
             logger.warning(f"No text content to embed for product {product_id}. Skipping Qdrant update.")
-            print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): No text to embed for product {product_id}. Returning.")
             return
 
-        # For products, assume one primary embedding (or first chunk if chunking strategy is defined)
-        # If chunking products: Implement chunking logic here or pass pre-chunked data
-        print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): Calling get_embeddings_for_texts for product {product_id}...")
-        embeddings = get_embeddings_for_texts([text_to_embed])
-        print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): Embeddings received for product {product_id}: {'Exists' if embeddings and embeddings[0] else 'None or Empty'}")
-        if not embeddings or not embeddings[0]:
-            logger.error(f"Failed to get embedding for product {product_id}")
-            print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): Failed to get embeddings for product {product_id}. Returning.")
-            return
+        chunks = chunk_text(text_to_process)
+        points_to_upsert = []
 
-        vector = embeddings[0]
-        payload = {
-            "name": product_data.get('name'),
-            "brand": product_data.get('brand'),
-            "category": product_data.get('category'),
-            "price": product_data.get('price'),
-            "rating": product_data.get('rating'),
-            "source_text_snippet": text_to_embed[:250] # Store a snippet
-        }
-        
-        # Qdrant ID: Use the product_id from PostgreSQL directly if it's an integer or UUID.
-        # If product_id is a string like "SP0001", Qdrant needs an integer or UUID.
-        # For consistency with how populate_db.py handles it: if product_id is not int/UUID,
-        # generate a deterministic UUID from it or use a mapping.
-        # Simplest approach if product_id is always an INT after mapping in PG:
-        # qdrant_id = int(product_id)
-        # If product_id from your DB is a string like "SP0001", you need to convert it.
-        # Let's assume for now you use a UUID derived from your string product_id.
-        qdrant_id_to_use = str(uuid.uuid5(uuid.NAMESPACE_DNS, product_id))
-        print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): Qdrant ID for product {product_id} will be {qdrant_id_to_use}")
+        for chunk_idx, chunk_text_content in enumerate(chunks):
+            embeddings = get_embeddings_for_texts([chunk_text_content])
+            if not embeddings or not embeddings[0]:
+                logger.error(f"Failed to get embedding for product {product_id}, chunk {chunk_idx}")
+                continue
 
+            vector = embeddings[0]
+            # Use a new random UUID for each chunk
+            qdrant_point_id = str(uuid.uuid4())
 
-        print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): Calling q_client.upsert for product {product_id}...")
-        q_client.upsert(
-            collection_name=VECTOR_DB_COLLECTION_PRODUCTS,
-            points=[qdrant_models.PointStruct(id=qdrant_id_to_use, vector=vector, payload=payload)]
-        )
-        print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): q_client.upsert call completed for product {product_id}.")
-        logger.info(f"Successfully upserted product {product_id} (Qdrant ID: {qdrant_id_to_use}) to Qdrant.")
+            payload = {
+                "original_product_id": product_id,
+                "name": product_data.get('name'),
+                "brand": product_data.get('brand'),
+                "category": product_data.get('category'),
+                "price": product_data.get('price'),
+                "rating": product_data.get('rating'),
+                "chunk_text": chunk_text_content,
+                "chunk_index": chunk_idx,
+            }
+            points_to_upsert.append(qdrant_models.PointStruct(id=qdrant_point_id, vector=vector, payload=payload))
+
+        if points_to_upsert:
+            q_client.upsert(
+                collection_name=VECTOR_DB_COLLECTION_PRODUCTS,
+                points=points_to_upsert,
+                wait=True
+            )
+            logger.info(f"Successfully upserted {len(points_to_upsert)} chunk(s) for product {product_id} to Qdrant.")
+
     except Exception as e:
         logger.error(f"Error updating product {product_id} in Qdrant: {e}", exc_info=True)
-        print(f"DEBUG: EMBEDDING_SYNC.PY (update_product_in_qdrant): EXCEPTION for product {product_id}: {e}")
 
 def delete_product_from_qdrant(q_client: QdrantClient, product_id: str):
     try:
@@ -199,7 +194,6 @@ def update_review_in_qdrant(
 
 def delete_review_from_qdrant(q_client: QdrantClient, review_id: int):
     try:
-        print(f"DEBUG: EMBEDDING_SYNC.PY (delete_review_from_qdrant): Deleting review {review_id}")
         logger.info(f"Deleting review {review_id} (and its chunks) from Qdrant.")
         # If you used UUIDs for chunks, you'd delete by filtering on "original_review_id" in payload
         q_client.delete(
@@ -288,6 +282,8 @@ def update_policy_in_qdrant(
     except Exception as e:
         logger.error(f"Error updating policy {policy_id} in Qdrant: {e}", exc_info=True)
         print(f"DEBUG: EMBEDDING_SYNC.PY (update_policy_in_qdrant): EXCEPTION for policy {policy_id}: {e}")
+
+
 
 def delete_policy_from_qdrant(q_client: QdrantClient, policy_id: int):
     try:

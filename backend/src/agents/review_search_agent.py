@@ -76,13 +76,22 @@ def search_qdrant_reviews_node(state: ReviewSearchAgentState):
         print(f"Error searching Qdrant for reviews: {e}")
     return {"retrieved_reviews": reviews}
 
+
 def format_review_context_node(state: ReviewSearchAgentState):
     print("--- Review Agent: Formatting Review Context ---")
     documents = state["retrieved_reviews"]
-    context_chunks = [
-        doc["payload"].get("text_chunk", "") # Assuming 'text_chunk' is in review payload
-        for doc in documents if doc.get("payload") and doc["payload"].get("text_chunk")
-    ]
+    context_chunks = []
+    for doc in documents:
+        payload = doc.get("payload", {})
+        product_id = payload.get("product_id", "N/A")
+        rating = payload.get("rating", "N/A")
+        
+        # --- CHANGE THIS LINE ---
+        # Change "review_text" to "source_text_snippet" to match the payload in Qdrant
+        review_snippet = payload.get("source_text_snippet", "") # Correct key is "source_text_snippet"
+        
+        context_chunks.append(f"Review for product {product_id}, Rating: {rating}. Snippet: {review_snippet}")
+        
     context_str = "\n\n".join(filter(None, context_chunks))
     if not context_str:
         context_str = "No specific review information found for your query."
