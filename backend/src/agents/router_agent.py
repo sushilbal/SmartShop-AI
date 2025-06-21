@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 # --- Agent State Definition ---
 class RouterAgentState(TypedDict):
     original_query: str
+    chat_history: List[dict]
     chosen_agent_name: Optional[str] # e.g., "product_search", "review_search", "faq_policy"
     error_message: Optional[str]
 
@@ -15,22 +16,23 @@ class RouterAgentState(TypedDict):
 async def route_query_node(state: RouterAgentState):
     print("--- Router Agent: Classifying Query ---")
     query = state["original_query"]
+    chat_history = state.get("chat_history", [])
 
-    # Define the capabilities of each agent for the LLM
-    agent_descriptions = """
+    # Define the capabilities of each agent for the LLM, now with context awareness
+    agent_descriptions = """You are an expert at routing a user's query to the correct agent.
+    Based on the user's query and the conversation history, determine which of the following agents is most appropriate.
+
     Available agents:
-    - 'product_search': Use for queries about specific products, product features, comparisons, availability, or general product information.
+    - 'product_search': Use for queries about specific products, product features, comparisons, availability, or general product information. This is also a good default if the user is asking a follow-up question about products.
     - 'review_search': Use for queries asking for user opinions, ratings, feedback, or reviews about products.
     - 'faq_policy': Use for queries about store policies (returns, shipping, privacy), frequently asked questions, customer service, or general store information.
-
-    Analyze the user query below. Which of the listed agents is the most appropriate to handle this query?
+   
     Your response MUST be exactly one of the following agent names: 'product_search', 'review_search', or 'faq_policy'.
-    If unsure, respond with 'product_search' as a default.
     """
-
-    prompt_messages = [
+    
+    prompt_messages = chat_history + [
         {"role": "system", "content": agent_descriptions},
-        {"role": "user", "content": f"User Query: {query}"}
+        {"role": "user", "content": f"Latest User Query: {query}"}
     ]
 
     chosen_agent = await get_llm_classification_response(prompt_messages)

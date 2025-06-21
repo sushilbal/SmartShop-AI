@@ -175,7 +175,10 @@ async def search_items(
         raise HTTPException(status_code=503, detail="Search routing service is unavailable.")
 
     try:
-        router_initial_state = {"original_query": user_query_text}
+        router_initial_state = {
+            "original_query": user_query_text,
+            "chat_history": current_session_history # Pass the chat history to the router
+        }
         router_final_state = await router_agent_graph.ainvoke(router_initial_state)
         chosen_agent_key = router_final_state.get("chosen_agent_name")
         logger.info(f"Router agent chose: '{chosen_agent_key}' for query: '{user_query_text}'")

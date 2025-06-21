@@ -1,5 +1,6 @@
-from typing import List, TypedDict, Optional # Optional is already here, but good to double check all agent files
+from typing import List, TypedDict, Optional
 import httpx
+import json
 
 from langgraph.graph import StateGraph, END
 
@@ -14,6 +15,7 @@ from src.models import SearchResultItem # For structuring results
 # --- Agent State Definition ---
 class ProductSearchAgentState(TypedDict):
     original_query: str
+    rewritten_query: str
     query_embedding: List[float]
     retrieved_products: List[dict] # List of Qdrant hit payloads for products
     context_for_llm: str
@@ -22,9 +24,39 @@ class ProductSearchAgentState(TypedDict):
     final_response: dict # To match SearchResponse Pydantic model structure
 
 # --- Node Functions ---
+async def rewrite_query_node_product(state: ProductSearchAgentState):
+    print("--- Product Agent: Rewriting Query for Context ---")
+    original_query = state["original_query"]
+    chat_history = state.get("chat_history", [])
+
+    if not chat_history:
+        # If there's no history, the original query is the one to use
+        return {"rewritten_query": original_query}
+
+    # A more robust prompt to ensure context is carried over for vector search.
+    rewrite_prompt = f"""You are an expert at rephrasing a follow-up question to be a standalone question that is perfect for a vector database search.
+Based on the **entire conversation history**, rephrase the follow-up question to be a self-contained, standalone question that includes all necessary context, especially the main subject of the conversation (like a product category or specific product names).
+
+**Conversation History:**
+{json.dumps(chat_history, indent=2)}
+
+**Follow-up Question:** "{original_query}"
+
+**Standalone Search Query:**"""
+
+    prompt_messages = [
+        {"role": "system", "content": "You are an expert at rephrasing conversational questions into standalone, self-contained search queries."},
+        {"role": "user", "content": rewrite_prompt}
+    ]
+
+    rewritten_query = await get_llm_response(prompt_messages)
+    cleaned_rewritten_query = rewritten_query.strip().strip('"')
+    print(f"Original query: '{original_query}'. Rewritten query: '{cleaned_rewritten_query}'")
+    return {"rewritten_query": cleaned_rewritten_query if cleaned_rewritten_query else original_query}
+
 async def embed_query_node_product(state: ProductSearchAgentState):
     print("--- Product Agent: Embedding Query ---")
-    query = state["original_query"]
+    query = state["rewritten_query"]
     
     async with httpx.AsyncClient() as client:
         try:
@@ -60,19 +92,29 @@ def search_qdrant_products_node(state: ProductSearchAgentState):
 
     products = []
     try:
+        # Fetch more results to have a better chance of finding unique products after filtering
         hits = q_client.search(
             collection_name=VECTOR_DB_COLLECTION_PRODUCTS,
             query_vector=query_embedding,
-            limit=5, # Get top 5 products
+            limit=15, # Fetch more to filter from
             with_payload=True
         )
+        
+        unique_products = {}
         for hit in hits:
             if hit.payload:
-                products.append({
-                    "id": hit.id,
-                    "score": hit.score,
-                    "payload": hit.payload
-                })
+                # Assuming 'product_id' is in the payload to identify unique products.
+                # The first time we see a product_id, we keep it, as results are ordered by score.
+                product_id = hit.payload.get("original_product_id")
+                if product_id and product_id not in unique_products:
+                    unique_products[product_id] = {
+                        "id": hit.id,
+                        "score": hit.score,
+                        "payload": hit.payload
+                    }
+        
+        # Limit to the top 5 unique products
+        products = list(unique_products.values())[:5]
     except Exception as e:
         print(f"Error searching Qdrant for products: {e}")
     return {"retrieved_products": products}
@@ -131,7 +173,7 @@ def format_product_context_node(state: ProductSearchAgentState):
 
 async def call_llm_product_node(state: ProductSearchAgentState):
     print("--- Product Agent: Calling LLM for Products ---")
-    query = state["original_query"]
+    query = state["rewritten_query"] # Use the rewritten query for context
     context = state["context_for_llm"]
     current_chat_history = state.get("chat_history", [])
 
@@ -159,7 +201,7 @@ Helpful Summary:"""
     answer = await get_llm_response(prompt_messages)
 
     updated_history = current_chat_history + [
-        {"role": "user", "content": query},
+        {"role": "user", "content": state["original_query"]}, # Save original query to history
         {"role": "assistant", "content": answer if answer else "Sorry, I could not generate a response for your product query."}
     ]
     return {"llm_answer": answer, "chat_history": updated_history}
@@ -185,13 +227,15 @@ def format_final_product_response_node(state: ProductSearchAgentState):
 def create_product_search_graph():
     workflow = StateGraph(ProductSearchAgentState)
 
+    workflow.add_node("rewrite_query_product", rewrite_query_node_product)
     workflow.add_node("embed_query_product", embed_query_node_product)
     workflow.add_node("search_qdrant_products", search_qdrant_products_node)
     workflow.add_node("format_product_context", format_product_context_node)
     workflow.add_node("call_llm_product", call_llm_product_node)
     workflow.add_node("format_final_product_response", format_final_product_response_node)
 
-    workflow.set_entry_point("embed_query_product")
+    workflow.set_entry_point("rewrite_query_product")
+    workflow.add_edge("rewrite_query_product", "embed_query_product")
     workflow.add_edge("embed_query_product", "search_qdrant_products")
     workflow.add_edge("search_qdrant_products", "format_product_context")
     workflow.add_edge("format_product_context", "call_llm_product")

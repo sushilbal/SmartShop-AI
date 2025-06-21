@@ -88,7 +88,39 @@ function SearchInterface() {
                             {entry.type === 'assistant' && entry.results && entry.results.length > 0 && (
                                 <div className="search-results-snippet">
                                     <p><em>Found {entry.results.length} related items.</em></p>
-                                    {/* You can add more detailed display of results here if needed */}
+                                     <ul>
+                                        {entry.results.map((item, itemIndex) => {
+                                            // Conditionally render based on the source collection
+                                            if (item.source_collection === 'products_collection') {
+                                                return (
+                                                    <li key={itemIndex}>
+                                                        <strong>{item.payload.name}</strong> ({item.payload.brand})
+                                                        <br />
+                                                        Category: {item.payload.category}
+                                                        <br />
+                                                        Price: ${item.payload.price} | Rating: {item.payload.rating}/5
+                                                    </li>
+                                                );
+                                            } else if (item.source_collection === 'reviews_collection') {
+                                                return (
+                                                    <li key={itemIndex}>
+                                                        <strong>Review for Product ID {item.payload.product_id}</strong>
+                                                        <br />
+                                                        Rating: {item.payload.rating}/5
+                                                        <br />
+                                                        <em>"{item.payload.chunk_text}"</em>
+                                                    </li>
+                                                );
+                                            } else {
+                                                // Fallback for other types, like policies
+                                                return (
+                                                    <li key={itemIndex}>
+                                                        Found an item from {item.source_collection}.
+                                                    </li>
+                                                );
+                                            }
+                                        })}
+                                    </ul>
                                 </div>
                             )}
                             {entry.type === 'assistant' && entry.direct_product_result && (

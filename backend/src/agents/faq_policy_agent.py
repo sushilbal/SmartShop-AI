@@ -2,6 +2,7 @@ from typing import List, TypedDict, Annotated, Sequence, Optional
 import operator
 import httpx
 
+import json
 from langgraph.graph import StateGraph, END
 
 # Import your existing helpers (you might refactor them slightly to fit LangGraph nodes)
@@ -16,6 +17,7 @@ from config.config import (
 # --- Agent State Definition ---
 class FaqPolicyAgentState(TypedDict):
     original_query: str
+    rewritten_query: str
     query_embedding: List[float]
     retrieved_documents: List[dict] # List of Qdrant hit payloads or formatted docs
     context_for_llm: str
@@ -24,9 +26,39 @@ class FaqPolicyAgentState(TypedDict):
     final_response: dict # Could be your SearchResponse Pydantic model structure
 
 # --- Node Functions ---
+async def rewrite_query_node_faq(state: FaqPolicyAgentState):
+    print("--- FAQ/Policy Agent: Rewriting Query for Context ---")
+    original_query = state["original_query"]
+    chat_history = state.get("chat_history", [])
+
+    if not chat_history:
+        # If there's no history, the original query is the one to use
+        return {"rewritten_query": original_query}
+
+    # A more robust prompt to ensure context is carried over for vector search.
+    rewrite_prompt = f"""You are an expert at rephrasing a follow-up question to be a standalone question that is perfect for a vector database search.
+Based on the **entire conversation history**, rephrase the follow-up question to be a self-contained, standalone question that includes all necessary context, especially the main subject of the conversation (like a product category or specific product names).
+
+**Conversation History:**
+{json.dumps(chat_history, indent=2)}
+
+**Follow-up Question:** "{original_query}"
+
+**Standalone Search Query:**"""
+
+    prompt_messages = [
+        {"role": "system", "content": "You are an expert at rephrasing conversational questions into standalone, self-contained search queries."},
+        {"role": "user", "content": rewrite_prompt}
+    ]
+
+    rewritten_query = await get_llm_response(prompt_messages)
+    cleaned_rewritten_query = rewritten_query.strip().strip('"')
+    print(f"Original query: '{original_query}'. Rewritten query: '{cleaned_rewritten_query}'")
+    return {"rewritten_query": cleaned_rewritten_query if cleaned_rewritten_query else original_query}
+
 async def embed_query_node(state: FaqPolicyAgentState): # Changed to async
     print("--- Node: Embedding Query ---")
-    query = state["original_query"]
+    query = state["rewritten_query"]
     
     async with httpx.AsyncClient() as client:
         try:
@@ -68,17 +100,24 @@ def search_qdrant_node(state: FaqPolicyAgentState):
         hits = q_client.search(
             collection_name=VECTOR_DB_COLLECTION_POLICIES, # Focus on policies for FAQ
             query_vector=query_embedding,
-            limit=5, # Get top 5 policy chunks
+            limit=15, # Fetch more to filter from
             with_payload=True
         )
+
+        unique_policies = {}
         for hit in hits:
             if hit.payload:
-                documents.append({
-                    "id": hit.id,
-                    "score": hit.score,
-                    "payload": hit.payload 
-                    # Add other hit attributes if needed, e.g., hit.vector (though usually not needed for context)
-                })
+                # Use 'original_policy_id' to ensure we only show one chunk per policy document.
+                # The first time we see a policy_id, we keep it, as results are ordered by score.
+                policy_id = hit.payload.get("original_policy_id")
+                if policy_id and policy_id not in unique_policies:
+                    unique_policies[policy_id] = {
+                        "id": hit.id,
+                        "score": hit.score,
+                        "payload": hit.payload
+                    }
+        # Limit to the top 5 unique policies
+        documents = list(unique_policies.values())[:5]
     except Exception as e:
         print(f"Error searching Qdrant: {e}")
         # Handle error
@@ -99,7 +138,7 @@ def format_context_node(state: FaqPolicyAgentState):
 
 async def call_llm_node(state: FaqPolicyAgentState): # Make it async if get_llm_rag_response is async
     print("--- Node: Calling LLM ---")
-    query = state["original_query"]
+    query = state["rewritten_query"] # Use the rewritten query for context
     context = state["context_for_llm"]
     current_chat_history = state.get("chat_history", []) # Get existing history
 
@@ -124,7 +163,7 @@ Answer:"""
 
     # Update chat history
     updated_history = current_chat_history + [
-        {"role": "user", "content": query}, # Add the original user query to history
+        {"role": "user", "content": state["original_query"]}, # Save original query to history
         {"role": "assistant", "content": answer if answer else "Sorry, I could not generate a response."}
     ]
 
@@ -154,13 +193,15 @@ def format_final_response_node(state: FaqPolicyAgentState):
 def create_faq_policy_graph():
     workflow = StateGraph(FaqPolicyAgentState)
 
+    workflow.add_node("rewrite_query", rewrite_query_node_faq)
     workflow.add_node("embed_query", embed_query_node)
     workflow.add_node("search_qdrant", search_qdrant_node)
     workflow.add_node("format_context", format_context_node)
     workflow.add_node("call_llm", call_llm_node) # Use `await call_llm_node` if using LangChain's .ainvoke
     workflow.add_node("format_final_response", format_final_response_node)
 
-    workflow.set_entry_point("embed_query")
+    workflow.set_entry_point("rewrite_query")
+    workflow.add_edge("rewrite_query", "embed_query")
     workflow.add_edge("embed_query", "search_qdrant")
     workflow.add_edge("search_qdrant", "format_context")
     workflow.add_edge("format_context", "call_llm")

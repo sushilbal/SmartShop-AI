@@ -1,5 +1,6 @@
 from typing import List, TypedDict, Optional # Optional is already here, but good to double check all agent files
 import httpx
+import json
 
 from langgraph.graph import StateGraph, END
 
@@ -14,6 +15,7 @@ from src.models import SearchResultItem
 # --- Agent State Definition ---
 class ReviewSearchAgentState(TypedDict):
     original_query: str
+    rewritten_query: str
     query_embedding: List[float]
     retrieved_reviews: List[dict] # List of Qdrant hit payloads for reviews
     context_for_llm: str
@@ -22,9 +24,39 @@ class ReviewSearchAgentState(TypedDict):
     final_response: dict # To match SearchResponse Pydantic model structure
 
 # --- Node Functions ---
+async def rewrite_query_node_review(state: ReviewSearchAgentState):
+    print("--- Review Agent: Rewriting Query for Context ---")
+    original_query = state["original_query"]
+    chat_history = state.get("chat_history", [])
+
+    if not chat_history:
+        # If there's no history, the original query is the one to use
+        return {"rewritten_query": original_query}
+
+    # A more robust prompt to ensure context is carried over for vector search.
+    rewrite_prompt = f"""You are an expert at rephrasing a follow-up question to be a standalone question that is perfect for a vector database search.
+Based on the **entire conversation history**, rephrase the follow-up question to be a self-contained, standalone question that includes all necessary context, especially the main subject of the conversation (like a product category or specific product names).
+
+**Conversation History:**
+{json.dumps(chat_history, indent=2)}
+
+**Follow-up Question:** "{original_query}"
+
+**Standalone Search Query:**"""
+
+    prompt_messages = [
+        {"role": "system", "content": "You are an expert at rephrasing conversational questions into standalone, self-contained search queries."},
+        {"role": "user", "content": rewrite_prompt}
+    ]
+
+    rewritten_query = await get_llm_response(prompt_messages)
+    cleaned_rewritten_query = rewritten_query.strip().strip('"')
+    print(f"Original query: '{original_query}'. Rewritten query: '{cleaned_rewritten_query}'")
+    return {"rewritten_query": cleaned_rewritten_query if cleaned_rewritten_query else original_query}
+
 async def embed_query_node_review(state: ReviewSearchAgentState):
     print("--- Review Agent: Embedding Query ---")
-    query = state["original_query"]
+    query = state["rewritten_query"]
     
     async with httpx.AsyncClient() as client:
         try:
@@ -62,16 +94,23 @@ def search_qdrant_reviews_node(state: ReviewSearchAgentState):
         hits = q_client.search(
             collection_name=VECTOR_DB_COLLECTION_REVIEWS,
             query_vector=query_embedding,
-            limit=5, # Get top 5 review chunks
+            limit=15, # Fetch more to filter from
             with_payload=True
         )
+        
+        unique_reviews = {}
         for hit in hits:
             if hit.payload:
-                reviews.append({
-                    "id": hit.id,
-                    "score": hit.score,
-                    "payload": hit.payload
-                })
+                review_id = hit.payload.get("original_review_id")
+                if review_id and review_id not in unique_reviews:
+                    unique_reviews[review_id] = {
+                        "id": hit.id,
+                        "score": hit.score,
+                        "payload": hit.payload
+                    }
+        
+        # Limit to the top 5 unique reviews
+        reviews = list(unique_reviews.values())[:5]
     except Exception as e:
         print(f"Error searching Qdrant for reviews: {e}")
     return {"retrieved_reviews": reviews}
@@ -86,9 +125,8 @@ def format_review_context_node(state: ReviewSearchAgentState):
         product_id = payload.get("product_id", "N/A")
         rating = payload.get("rating", "N/A")
         
-        # --- CHANGE THIS LINE ---
-        # Change "review_text" to "source_text_snippet" to match the payload in Qdrant
-        review_snippet = payload.get("source_text_snippet", "") # Correct key is "source_text_snippet"
+        # Use "text_chunk" to match the payload key from embedding_sync.py
+        review_snippet = payload.get("text_chunk", "")
         
         context_chunks.append(f"Review for product {product_id}, Rating: {rating}. Snippet: {review_snippet}")
         
@@ -99,29 +137,35 @@ def format_review_context_node(state: ReviewSearchAgentState):
 
 async def call_llm_review_node(state: ReviewSearchAgentState):
     print("--- Review Agent: Calling LLM for Reviews ---")
-    query = state["original_query"]
+    query = state["rewritten_query"] # Use the rewritten query for context
     context = state["context_for_llm"]
     current_chat_history = state.get("chat_history", [])
 
-    rag_prompt_content = f"""Based on the following customer reviews, please answer the user's question.
-If the context doesn't directly answer the question, state that you couldn't find specific information in the provided reviews.
+    # An improved prompt to better handle summarization and cases with generic or limited review context.
+    rag_prompt_content = f"""You are a helpful shopping assistant. Your task is to answer the user's question based on the provided customer review snippets.
+Analyze the reviews and synthesize an answer.
 
-Customer Reviews Context:
+- If the user asks for "pros and cons", "comparison", or "which is best", summarize the positive and negative points from the reviews. Use the ratings as a guide.
+- Address the user's question directly.
+- If the provided reviews are too generic (e.g., they all say the same thing) or don't contain enough information to answer the question, clearly state that you can only provide a limited summary based on the available feedback. Do not invent information.
+- Keep the answer concise and focused on the user's query.
+
+**Customer Reviews Context:**
 {context}
 
-User Question: {query}
+**User's Question:** "{query}"
 
-Answer:"""
+**Helpful Summary of Reviews:**"""
 
     prompt_messages = current_chat_history + [
-        {"role": "system", "content": "You are a helpful shopping assistant. Answer questions based on the provided customer review information."},
+        {"role": "system", "content": "You are a helpful shopping assistant that summarizes customer reviews to answer user questions."},
         {"role": "user", "content": rag_prompt_content}
     ]
 
     answer = await get_llm_response(prompt_messages)
 
     updated_history = current_chat_history + [
-        {"role": "user", "content": query},
+        {"role": "user", "content": state["original_query"]}, # Save original query to history
         {"role": "assistant", "content": answer if answer else "Sorry, I could not generate a response based on the reviews."}
     ]
     return {"llm_answer": answer, "chat_history": updated_history}
@@ -146,13 +190,15 @@ def format_final_review_response_node(state: ReviewSearchAgentState):
 def create_review_search_graph():
     workflow = StateGraph(ReviewSearchAgentState)
 
+    workflow.add_node("rewrite_query_review", rewrite_query_node_review)
     workflow.add_node("embed_query_review", embed_query_node_review)
     workflow.add_node("search_qdrant_reviews", search_qdrant_reviews_node)
     workflow.add_node("format_review_context", format_review_context_node)
     workflow.add_node("call_llm_review", call_llm_review_node)
     workflow.add_node("format_final_review_response", format_final_review_response_node)
 
-    workflow.set_entry_point("embed_query_review")
+    workflow.set_entry_point("rewrite_query_review")
+    workflow.add_edge("rewrite_query_review", "embed_query_review")
     workflow.add_edge("embed_query_review", "search_qdrant_reviews")
     workflow.add_edge("search_qdrant_reviews", "format_review_context")
     workflow.add_edge("format_review_context", "call_llm_review")
