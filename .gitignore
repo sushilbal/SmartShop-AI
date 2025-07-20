@@ -16,3 +16,12 @@ data/raw/*
 /frontend/yarn-error.log*
 
 /embedding_service/wheels/
+
+# Ignore Terraform provider binaries and state files
+/smartshop-iac/.terraform/
+/smartshop-iac/*.tfstate
+/smartshop-iac/*.tfstate.backup
+/smartshop-iac/.terraform.lock.hcl
+/smartshop-iac/.terraform.lock.hcl.json
+/smartshop-iac/.terraform.tfvars
+/smartshop-iac/.terraform.tf
