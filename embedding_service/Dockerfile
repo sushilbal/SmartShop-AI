@@ -57,7 +57,7 @@ ENV TRANSFORMERS_CACHE=${MODEL_CACHE_FOLDER_ARG}
 
 RUN mkdir -p ${HF_HOME} && chmod -R 777 ${HF_HOME}
 
-COPY ./embedding_service/main.py /app/main.py
+COPY ./main.py /app/main.py
 
 EXPOSE 8001
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]

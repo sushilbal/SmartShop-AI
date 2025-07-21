@@ -236,8 +236,8 @@ This file should include `pytest`, `requests-mock`, `httpx`, and all other depen
 *   **Frontend Application**:
     *   `http://localhost:80` (or the port your frontend is configured to serve on)
 *   **Qdrant Vector Database**:
-    *   REST API / Dashboard: `http://localhost:6334/dashboard` (Qdrant's default REST port is 6333, UI is often on 6334)
-    *   Client libraries will connect to `vector_db:6333` (gRPC) from within the Docker network.
+    *   REST API / Dashboard: `http://localhost:6333/dashboard`
+    *   Client libraries will connect to `vector_db:6334` (gRPC) from within the Docker network.
 *   **PostgreSQL Database**:
     *   Connect using a SQL client to:
         *   Host: `localhost`

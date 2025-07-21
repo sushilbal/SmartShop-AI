@@ -6,3 +6,27 @@
 .terraform.lock.hcl.json
 .terraform.tfvars
 .terraform.tf
+
+
+-------------------------------------------------------------+
+|  093302629907.dkr.ecr.us-east-1.amazonaws.com/smartshop-vector-db        |
+|  093302629907.dkr.ecr.us-east-1.amazonaws.com/smartshop-frontend         |
+|  093302629907.dkr.ecr.us-east-1.amazonaws.com/smartshop-backend          |
+|  093302629907.dkr.ecr.us-east-1.amazonaws.com/smartshop-embedding-model  |
+
+cd frontend/
+
+# 2. Build the Docker image
+docker build -t smartshop-vector-db .
+
+# 3. Tag the image with the ECR URI (replace with your actual URI)
+docker tag smartshop-frontend:latest 093302629907.dkr.ecr.us-east-1.amazonaws.com/smartshop-frontend:latest
+
+# 4. Push the image to ECR
+docker push 093302629907.dkr.ecr.us-east-1.amazonaws.com/smartshop-frontend:latest
+
+
+# 5. Navigate back to the root directory
+cd ..
+
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com
