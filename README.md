@@ -1,270 +1,103 @@
-# SmartShop-AI
+# SmartShop AI: AI-Powered E-commerce Search Platform
 
-SmartShop-AI is a comprehensive e-commerce platform enhanced with AI capabilities, including semantic search powered by text embeddings and a vector database. This project is containerized using Docker and orchestrated with Docker Compose.
+SmartShop AI is a sophisticated, multi-agent e-commerce platform that leverages Retrieval-Augmented Generation (RAG) for intelligent, conversational product discovery. It uses a vector database and large language models to provide semantic search capabilities far beyond traditional keyword-based systems.
 
-## Table of Contents
+[cite\_start]The entire application is containerized and designed for cloud-native deployment on AWS using Terraform for Infrastructure as Code. [cite: 1, 2]
 
-- [Project Overview](#project-overview)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Configuration](#configuration)
-- [Getting Started](#getting-started)
-  - [Building and Running the Application](#building-and-running-the-application)
-  - [Database Initialization](#database-initialization)
-- [Accessing Services](#accessing-services)
-- [Stopping the Application](#stopping-the-application)
-- [Development Notes](#development-notes)
+## High-Level Architecture
 
-## Project Overview
+The platform is built on a microservices architecture, with separate services for the frontend, backend API, and AI/ML model serving.
 
-This project aims to provide a modern e-commerce experience with intelligent features. It includes a backend API for managing products, reviews, and policies, an embedding service for generating text embeddings, a vector database for storing and searching these embeddings, and a frontend for user interaction.
+### AWS Cloud Architecture
 
-## Features
+For production, the services are deployed to a scalable, serverless infrastructure on AWS:
 
-*   Relational database for structured data (Products, Reviews, Store Policies).
-*   Vector database for storing text embeddings.
-*   Dedicated embedding service to generate embeddings.
-*   FastAPI backend for robust and fast API development.
-*   Automated database schema creation and initial data population.
-*   Containerized services for easy setup and deployment.
+  * **Networking**: A custom VPC with public and private subnets ensures a secure and isolated environment. A NAT Gateway allows private services to access the internet for external API calls (e.g., to OpenAI).
+  * **Compute**: All application containers run on **AWS ECS with Fargate**, eliminating the need to manage servers.
+  * **Load Balancing**: An **Application Load Balancer (ALB)** securely exposes the frontend to the internet and routes internal API traffic based on URL paths (`/api/*`).
+  * **Databases**:
+      * **AWS RDS for PostgreSQL** serves as the primary relational database.
+      * **AWS ElastiCache for Redis** provides a high-speed cache and session store.
+      * The **Qdrant Vector Database** runs as a dedicated service on ECS.
+  * **Service Discovery**: **AWS Cloud Map** provides a private DNS namespace (`smartshop.local`) allowing services to discover each other reliably within the VPC.
+  * **Container Registry**: **Amazon ECR** stores the Docker images for all services.
+
+## Core Features & Capabilities
+
+  * **Semantic Search**: Users can search for products using natural language questions (e.g., "what do people say about headphones for running?"). [cite\_start]The system understands the *intent* behind the query, not just keywords. [cite: 1, 21, 30]
+  * **Multi-Agent System**: A sophisticated router agent analyzes the user's query and directs it to the appropriate specialized agent for handling:
+      * [cite\_start]**Product Search Agent**: For semantic searches across product catalogs. [cite: 13]
+      * **Review Search Agent**: For questions related to customer opinions and feedback.
+      * **FAQ & Policy Agent**: For handling queries about store policies like shipping and returns.
+  * [cite\_start]**Retrieval-Augmented Generation (RAG)**: The system retrieves relevant product data, reviews, or policies from the vector database and feeds them to an OpenAI LLM to generate a coherent, context-aware answer. [cite: 15]
+  * **Conversational Memory**: The application maintains chat history for each user session using Redis, allowing for contextual follow-up questions.
+  * **Infrastructure as Code (IaC)**: The entire cloud infrastructure is defined declaratively using Terraform, enabling automated, repeatable, and version-controlled deployments.
 
 ## Tech Stack
 
-*   **Backend**: Python, FastAPI, SQLAlchemy
-*   **Database**: PostgreSQL (Relational), Qdrant (Vector)
-*   **Embedding Service**: Python, FastAPI, Sentence-Transformers
-*   **Frontend**: (To be specified - e.g., React, Vue, Angular, or static HTML/CSS/JS)
-*   **Orchestration**: Docker, Docker Compose
+| Category | Technology |
+| --- |--- |
+| **Backend** | Python, FastAPI, SQLAlchemy, Pydantic |
+| **Frontend**| React, Vite, Nginx (as web server) |
+| **AI / ML**| LangGraph (Multi-Agent Workflows), OpenAI (LLM), Sentence-Transformers (Embeddings), PyTorch |
+| **Databases** | AWS RDS (PostgreSQL), AWS ElastiCache (Redis), Qdrant (Vector Database) |
+| **Infrastructure & DevOps**| AWS, Terraform, Docker, Docker Compose, Amazon ECR, ECS Fargate |
 
 ## Project Structure
 
 ```
 SmartShop-AI/
-├── backend/                # FastAPI backend application (API)
-│   ├── src/                # Main source code for the backend
-│   ├── Dockerfile
-│   └── requirements.txt
-├── config/                 # Global configuration files (e.g., config.py, column_mappings.py)
-├── data/
-│   └── raw/                # CSV files for initial data population
-├── database/
-│   ├── init.sql            # SQL schema definition
-│   └── Dockerfile_init     # Dockerfile for the db_init service
-├── embedding_service/      # FastAPI service for generating embeddings
-│   ├── main.py
-│   ├── Dockerfile
-│   └── requirements.txt
-├── frontend/               # Frontend application
-│   └── Dockerfile
-├── scripts/                # Python scripts (e.g., populate_db.py)
-│   └── requirements.txt
-├── .env                    # Environment variables (create this file)
-├── docker-compose.yml      # Docker Compose configuration
-└── README.md               # This file
+├── backend/                # FastAPI backend application (API, agents, business logic)
+├── config/                 # Global Python configuration files
+├── data/                   # Raw CSV data for initial database population
+├── database/               # SQL schema and Dockerfile for the db_init service
+├── embedding_service/      # FastAPI service for generating text embeddings
+├── frontend/               # React frontend application
+├── scripts/                # Python scripts for database population
+├── smartshop-iac/          # Terraform Infrastructure as Code for AWS deployment
+├── .env                    # Local environment variables
+└── docker-compose.yml      # Docker Compose configuration for local development
 ```
 
-## Prerequisites
+## Execution Guide
 
-*   [Docker](https://docs.docker.com/get-docker/)
-*   [Docker Compose](https://docs.docker.com/compose/install/)
+There are two primary ways to run this application: locally for development and deployed to the cloud for production.
 
-## Configuration
+### Local Development using Docker Compose
 
-The application uses a `.env` file in the project root (`/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/.env`) for configuration. Create this file by copying `.env.example` (if provided) or by creating it manually with the following content, adjusting values as needed:
+This method is ideal for development and testing.
 
-```env
-# PostgreSQL Database Configuration
-POSTGRES_USER=myuser
-POSTGRES_PASSWORD=mypassword
-POSTGRES_DB=smartshop_db
-
-# Embedding Model Configuration
-# (Optional, defaults to 'all-MiniLM-L6-v2' if not set in docker-compose.yml or embedding_service/main.py)
-EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
-
-# Qdrant Collection Names (Optional, defaults are set in config/config.py)
-# These are used by the populate_db.py script.
-# VECTOR_DB_COLLECTION_PRODUCTS=my_custom_products
-# VECTOR_DB_COLLECTION_REVIEWS=my_custom_reviews
-# VECTOR_DB_COLLECTION_POLICIES=my_custom_policies
-```
-
-The `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/config/config.py` file loads these environment variables. Critical variables like database credentials and service URLs are expected to be set either in this `.env` file or as system environment variables.
-
-## Getting Started
-
-### Building and Running the Application
-
-1.  Navigate to the project root directory:
-    ```bash
-    cd /home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/
-    ```
-2.  Build the Docker images and start all services in detached mode:
+1.  **Prerequisites**: Docker and Docker Compose must be installed.
+2.  **Configuration**: Create a `.env` file in the project root with the necessary variables (e.g., `POSTGRES_USER`, `POSTGRES_PASSWORD`, `OPENAI_API_KEY`).
+3.  **Build and Run**: From the project root, run:
     ```bash
     docker-compose up --build -d
     ```
-    This command will:
-    *   Build Docker images for `backend`, `frontend`, `embedding_model`, and `db_init`.
-    *   Pull official images for PostgreSQL (`db`) and Qdrant (`vector_db`).
-    *   Create necessary Docker volumes for data persistence.
-    *   Start all services in the defined order, respecting dependencies and healthchecks.
+4.  **Database Initialization**: The `db_init` service runs automatically to create the schema and populate the databases from the CSV files. Monitor its progress with `docker-compose logs -f db_init`.
+5.  **Access Services**:
+      * **Frontend UI**: `http://localhost`
+      * **Backend API Docs**: `http://localhost:8000/docs`
+      * **Qdrant Dashboard**: `http://localhost:6333/dashboard`
 
-### Database Initialization
+### Cloud Deployment to AWS with Terraform
 
-*   The `db_init` service automatically runs the `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/scripts/populate_db.py` script. This occurs after the PostgreSQL database is healthy and the embedding/vector DB services have started.
-*   This script:
-    1.  Creates the schema in PostgreSQL using `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/database/init.sql`.
-    2.  Populates PostgreSQL tables from CSV files located in `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/data/raw/`.
-    3.  Creates collections in Qdrant.
-    4.  Fetches data from PostgreSQL, generates embeddings via the `embedding_model` service, and populates the Qdrant vector database.
-*   To check the logs of the initialization process:
-    ```bash
-    docker-compose logs db_init
-    ```
-    Look for "Database setup and population process completed." The `db_init` container will exit with code 0 upon successful completion.
+This is the production-grade deployment path.
 
- your `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/.env` file).
-
-3.  **Inspect the data:**
-    *   List tables:
-        ```sql
-        \dt
-        ```
-        You should see `products`, `reviews`, and `store_policies`.
-    *   Check row counts:
-        ```sql
-        SELECT COUNT(*) FROM products;
-        SELECT COUNT(*) FROM reviews;
-        SELECT COUNT(*) FROM store_policies;
-        ```
-    *   View sample data:
-        ```sql
-        SELECT * FROM products LIMIT 5;
-        ```
-
-4.  **Exit `psql` and the container:**
-    *   Type `\q` to exit `psql`.
-    *   Type `exit` to leave the container shell.
-
-### 2. Validating Vector Database (Qdrant)
-
-Qdrant provides a Web UI and a REST API for inspection.
- 
-1.  **Using the Qdrant Web UI:**
-    *   Open your browser and navigate to `http://localhost:6333/dashboard`.
-    *   You should see your collections listed. Based on your `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/.env` file, these are `my_custom_products`, `my_custom_reviews`, and `my_custom_policies`.
-    *   Click on a collection to see its details, including the number of points (vectors).
-
-2.  **Using `curl` (Command Line):**
-    *   List all collections:
+1.  **Prerequisites**:
+      * An AWS account.
+      * AWS CLI installed and configured (`aws configure`).
+      * Terraform installed.
+2.  **IAM Permissions**: Ensure your AWS user has sufficient permissions to create all the necessary resources (EC2, VPC, ECS, RDS, ElastiCache, ECR, IAM, CloudWatch, Cloud Map).
+3.  **Deploy Infrastructure**:
+      * Navigate to the `smartshop-iac/` directory.
+      * Create a `terraform.tfvars` file to store your database credentials.
+      * Run the following commands:
         ```bash
-        curl http://localhost:6333/collections
-        "collections": [
-            {
-                "name": "policies_collection"
-            },
-            {
-                "name": "products_collection"
-            },
-            {
-                "name": "reviews_collection"
-            }
-        ]
+        terraform init
+        terraform apply
         ```
-    *   Get info about a specific collection (e.g., `my_custom_products`):
-        ```bash
-        curl http://localhost:6333/collections/products_collection
-        ```
-        Look for `points_count` in the JSON response.
-    *   Scroll through a few points from a collection (e.g., `my_custom_products`):
-        ```bash
-        curl -X POST -H "Content-Type: application/json" \
-             -d '{"limit": 5, "with_payload": true, "with_vectors": false}' \
-             http://localhost:6333/collections/products_collection/points/scroll
-        ```
-
-If data is missing or counts are incorrect, check the logs of the `db_init` service: `docker-compose logs db_init`.
-
-## Running Backend API Tests
-
-The backend API includes a suite of tests written using `pytest` to ensure functionality and reliability. These tests cover CRUD operations for products, reviews, and policies, including interactions with a test database and mocked Qdrant synchronization.
-
-### Prerequisites for Testing
-
-1.  **Python Environment**: Ensure you have a Python environment (e.g., a virtual environment like `.smartshop`) activated with all necessary development dependencies installed.
-2.  **Test Database**: The tests require a separate PostgreSQL database (e.g., `test_smartshop_db`).
-    *   Create this database on your PostgreSQL server.
-    *   Ensure the user specified in your `.env` file (e.g., `POSTGRES_USER=smartshop-ai`) has ownership or necessary privileges on this test database. You can create it and set ownership by connecting to your PostgreSQL instance (e.g., via `docker-compose exec db psql -U ${POSTGRES_USER} -d postgres`) and running:
-        ```sql
-        CREATE DATABASE test_smartshop_db;
-        ALTER DATABASE test_smartshop_db OWNER TO smartshop_ai; -- Replace smartshop_ai if your user is different
-        ```
-    The test configuration in `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/backend/tests/conftest.py` will automatically create and drop tables within this test database for each test session.
-
-### Installing Test Dependencies
-
-Navigate to the backend directory and install the development requirements:
-```bash
-cd /home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/backend/
-pip install -r requirements-dev.text # Or requirements-dev.txt if you renamed it
-```
-This file should include `pytest`, `requests-mock`, `httpx`, and all other dependencies required by the backend application and its tests.
-
-### Running Tests
-
-1.  Ensure your Python virtual environment is activated.
-2.  Navigate to the backend directory:
-    ```bash
-    cd /home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/backend/
-    ```
-3.  Run `pytest`:
-    ```bash
-    pytest
-    ```
-    For more detailed output:
-    ```bash
-    pytest -v -s
-    ```
-    
-## Accessing Services
-
-*   **Backend API (FastAPI)**:
-    *   Swagger UI (Interactive Docs): `http://localhost:8000/docs`
-    *   ReDoc: `http://localhost:8000/redoc`
-*   **Frontend Application**:
-    *   `http://localhost:80` (or the port your frontend is configured to serve on)
-*   **Qdrant Vector Database**:
-    *   REST API / Dashboard: `http://localhost:6333/dashboard`
-    *   Client libraries will connect to `vector_db:6334` (gRPC) from within the Docker network.
-*   **PostgreSQL Database**:
-    *   Connect using a SQL client to:
-        *   Host: `localhost`
-        *   Port: `5432`
-        *   User: Value of `POSTGRES_USER` from your `.env` file.
-        *   Password: Value of `POSTGRES_PASSWORD` from your `.env` file.
-        *   Database: Value of `POSTGRES_DB` from your `.env` file.
-*   **Embedding Service**:
-    *   Accessible at `http://localhost:8001`. The primary endpoint is `/embed`.
-
-## Stopping the Application
-
-*   To stop all running services:
-    ```bash
-    docker-compose down
-    ```
-*   To stop services and remove named volumes (this will delete persisted data for PostgreSQL and Qdrant):
-    ```bash
-    docker-compose down -v
-    ```
-
-## Development Notes
-
-*   The `backend` service in `docker-compose.yml` mounts the local `./backend` directory into the container at `/app`. This allows for live code reloading during development if your Uvicorn server is started with the `--reload` flag (not currently set in the default `CMD`).
-*   Ensure all necessary `__init__.py` files are present in directories intended to be Python packages (e.g., `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/config/`, `/home/sushil/d-codebase/ProjectUp/SmartShopAI/SmartShop-AI/backend/src/`).
-
----
-
-This README should provide a good starting point for anyone working with the SmartShop-AI project.
-```
+4.  **Build and Push Docker Images**:
+      * Authenticate Docker with your AWS ECR registry (`aws ecr get-login-password...`).
+      * For each service (`backend`, `frontend`, `embedding_service`, `vector_db`), build the Docker image, tag it with the ECR repository URI, and push it.
+5.  **Initialize the Database**:
+      * Run the `db_init` task as a one-time ECS task to populate your RDS and Qdrant databases. This requires running an AWS CLI command (`aws ecs run-task`) to manually trigger the task in your VPC's private subnets.
