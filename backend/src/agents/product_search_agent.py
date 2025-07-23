@@ -70,7 +70,6 @@ async def embed_query_node_product(state: ProductSearchAgentState):
                     return {"query_embedding": embedding}
             
             print(f"Error: Unexpected response format from embedding service: {result}")
-            # Ensure all required keys in the state are set even on error to avoid KeyErrors downstream
             return {"query_embedding": [], "retrieved_products": [], "context_for_llm": "Error embedding query due to unexpected response format.", "llm_answer": None, "chat_history": state.get("chat_history", [])}
 
         except httpx.RequestError as e:
@@ -92,7 +91,6 @@ def search_qdrant_products_node(state: ProductSearchAgentState):
 
     products = []
     try:
-        # Fetch more results to have a better chance of finding unique products after filtering
         hits = q_client.search(
             collection_name=VECTOR_DB_COLLECTION_PRODUCTS,
             query_vector=query_embedding,
@@ -103,8 +101,6 @@ def search_qdrant_products_node(state: ProductSearchAgentState):
         unique_products = {}
         for hit in hits:
             if hit.payload:
-                # Assuming 'product_id' is in the payload to identify unique products.
-                # The first time we see a product_id, we keep it, as results are ordered by score.
                 product_id = hit.payload.get("original_product_id")
                 if product_id and product_id not in unique_products:
                     unique_products[product_id] = {
@@ -130,9 +126,7 @@ def format_product_context_node(state: ProductSearchAgentState):
         name = payload.get("name", "N/A")
         brand = payload.get("brand", "N/A")
         category = payload.get("category", "N/A")
-        # --- CHANGE THIS LINE ---
-        # Change source_text_snippet to chunk_text to match what's in Qdrant
-        description_snippet = payload.get("chunk_text", "") # Correct key is "chunk_text"
+        description_snippet = payload.get("chunk_text", "") 
         context_chunks.append(f"Product: {name}, Brand: {brand}, Category: {category}. Details: {description_snippet}")
     
     context_str = "\n\n".join(filter(None, context_chunks))
@@ -140,44 +134,13 @@ def format_product_context_node(state: ProductSearchAgentState):
         context_str = "No specific product information found for your query."
     return {"context_for_llm": context_str}
 
-# async def call_llm_product_node(state: ProductSearchAgentState):
-#     print("--- Product Agent: Calling LLM for Products ---")
-#     query = state["original_query"]
-#     context = state["context_for_llm"]
-#     current_chat_history = state.get("chat_history", [])
-
-#     rag_prompt_content = f"""Based on the following product information, please answer the user's question.
-# If the context doesn't directly answer the question, state that you couldn't find specific information in the provided product details.
-
-# Product Information Context:
-# {context}
-
-# User Question: {query}
-
-# Answer:"""
-
-#     prompt_messages = current_chat_history + [
-#         {"role": "system", "content": "You are a helpful shopping assistant. Answer questions based on the provided product information."},
-#         {"role": "user", "content": rag_prompt_content}
-#     ]
-
-#     answer = await get_llm_response(prompt_messages)
-
-#     updated_history = current_chat_history + [
-#         {"role": "user", "content": query},
-#         {"role": "assistant", "content": answer if answer else "Sorry, I could not generate a response for your product query."}
-#     ]
-#     return {"llm_answer": answer, "chat_history": updated_history}
-
-# In backend/src/agents/product_search_agent.py
 
 async def call_llm_product_node(state: ProductSearchAgentState):
     print("--- Product Agent: Calling LLM for Products ---")
-    query = state["rewritten_query"] # Use the rewritten query for context
+    query = state["rewritten_query"] 
     context = state["context_for_llm"]
     current_chat_history = state.get("chat_history", [])
 
-    # --- THIS IS THE CORRECTED, MORE EFFECTIVE PROMPT ---
     rag_prompt_content = f"""You are a helpful e-commerce shopping assistant.
 Your goal is to help the user find the products they are looking for based on their request.
 Use the "Product Information Context" below, which contains the results of a database search, to help the user.
@@ -211,13 +174,12 @@ def format_final_product_response_node(state: ProductSearchAgentState):
     final_response_data = {
         "query_type": "product_search_rag_langgraph",
         "llm_answer": state.get("llm_answer"),
-        "direct_product_result": None, # This agent doesn't do direct ID lookups
+        "direct_product_result": None, 
         "results": [
-            SearchResultItem( # Using the Pydantic model for structure
+            SearchResultItem( 
                 score=doc.get("score"),
                 source_collection=VECTOR_DB_COLLECTION_PRODUCTS,
                 payload=doc.get("payload")
-                # retrieved_item could be populated if you fetch full details from PostgreSQL
             ).model_dump() for doc in state.get("retrieved_products", []) # Convert to dict
         ]
     }

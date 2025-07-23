@@ -1,4 +1,4 @@
-from typing import List, TypedDict, Optional # Optional is already here, but good to double check all agent files
+from typing import List, TypedDict, Optional 
 import httpx
 import json
 
@@ -17,11 +17,11 @@ class ReviewSearchAgentState(TypedDict):
     original_query: str
     rewritten_query: str
     query_embedding: List[float]
-    retrieved_reviews: List[dict] # List of Qdrant hit payloads for reviews
+    retrieved_reviews: List[dict] 
     context_for_llm: str
     llm_answer: Optional[str]
-    chat_history: List[dict] # To store conversation messages
-    final_response: dict # To match SearchResponse Pydantic model structure
+    chat_history: List[dict] 
+    final_response: dict 
 
 # --- Node Functions ---
 async def rewrite_query_node_review(state: ReviewSearchAgentState):
@@ -30,10 +30,9 @@ async def rewrite_query_node_review(state: ReviewSearchAgentState):
     chat_history = state.get("chat_history", [])
 
     if not chat_history:
-        # If there's no history, the original query is the one to use
         return {"rewritten_query": original_query}
 
-    # A more robust prompt to ensure context is carried over for vector search.
+    
     rewrite_prompt = f"""You are an expert at rephrasing a follow-up question to be a standalone question that is perfect for a vector database search.
 Based on the **entire conversation history**, rephrase the follow-up question to be a self-contained, standalone question that includes all necessary context, especially the main subject of the conversation (like a product category or specific product names).
 
@@ -125,7 +124,7 @@ def format_review_context_node(state: ReviewSearchAgentState):
         product_id = payload.get("product_id", "N/A")
         rating = payload.get("rating", "N/A")
         
-        # Use "text_chunk" to match the payload key from embedding_sync.py
+        
         review_snippet = payload.get("text_chunk", "")
         
         context_chunks.append(f"Review for product {product_id}, Rating: {rating}. Snippet: {review_snippet}")
@@ -141,7 +140,7 @@ async def call_llm_review_node(state: ReviewSearchAgentState):
     context = state["context_for_llm"]
     current_chat_history = state.get("chat_history", [])
 
-    # An improved prompt to better handle summarization and cases with generic or limited review context.
+   
     rag_prompt_content = f"""You are a helpful shopping assistant. Your task is to answer the user's question based on the provided customer review snippets.
 Analyze the reviews and synthesize an answer.
 

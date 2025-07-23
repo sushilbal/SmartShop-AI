@@ -5,25 +5,23 @@ import httpx
 import json
 from langgraph.graph import StateGraph, END
 
-# Import your existing helpers (you might refactor them slightly to fit LangGraph nodes)
 from src.llm_handler import get_llm_response # Changed from get_llm_rag_response
 from src.dependencies import get_qdrant_db_client # To get a Qdrant client instance
 from config.config import (
     VECTOR_DB_COLLECTION_POLICIES,
-    EMBEDDING_SERVICE_URL # Assuming this is defined in your config e.g., "http://localhost:8001/embed/"
+    EMBEDDING_SERVICE_URL 
 )
-# You'll need to pass the Qdrant client to the nodes or make it accessible.
 
 # --- Agent State Definition ---
 class FaqPolicyAgentState(TypedDict):
     original_query: str
     rewritten_query: str
     query_embedding: List[float]
-    retrieved_documents: List[dict] # List of Qdrant hit payloads or formatted docs
+    retrieved_documents: List[dict] 
     context_for_llm: str
     llm_answer: Optional[str] # Can be None if LLM fails
     chat_history: List[dict] # To store conversation messages [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
-    final_response: dict # Could be your SearchResponse Pydantic model structure
+    final_response: dict 
 
 # --- Node Functions ---
 async def rewrite_query_node_faq(state: FaqPolicyAgentState):
@@ -32,10 +30,9 @@ async def rewrite_query_node_faq(state: FaqPolicyAgentState):
     chat_history = state.get("chat_history", [])
 
     if not chat_history:
-        # If there's no history, the original query is the one to use
         return {"rewritten_query": original_query}
 
-    # A more robust prompt to ensure context is carried over for vector search.
+    
     rewrite_prompt = f"""You are an expert at rephrasing a follow-up question to be a standalone question that is perfect for a vector database search.
 Based on the **entire conversation history**, rephrase the follow-up question to be a self-contained, standalone question that includes all necessary context, especially the main subject of the conversation (like a product category or specific product names).
 
@@ -62,12 +59,12 @@ async def embed_query_node(state: FaqPolicyAgentState): # Changed to async
     
     async with httpx.AsyncClient() as client:
         try:
-            # Assuming the embedding service expects a list of texts
+            
             response = await client.post(EMBEDDING_SERVICE_URL, json={"texts": [query]})
             response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
             result = response.json()
             
-            # Assuming the service returns a list of embeddings, one for each input text
+
             if "embeddings" in result and isinstance(result["embeddings"], list) and len(result["embeddings"]) > 0:
                 embedding = result["embeddings"][0]
                 if isinstance(embedding, list):
@@ -89,13 +86,13 @@ def search_qdrant_node(state: FaqPolicyAgentState):
     if not query_embedding:
         return {"retrieved_documents": [], "context_for_llm": "Skipping Qdrant search due to embedding error."}
 
-    q_client = get_qdrant_db_client() # This needs to be managed carefully in async context if client is not thread-safe
-                                     # Or pass client instance if graph is compiled per request
+    q_client = get_qdrant_db_client() 
+                                     
     if not q_client:
         return {"retrieved_documents": [], "context_for_llm": "Qdrant client not available."}
 
     documents = []
-    # Simplified search across policies for now
+    
     try:
         hits = q_client.search(
             collection_name=VECTOR_DB_COLLECTION_POLICIES, # Focus on policies for FAQ
@@ -107,8 +104,7 @@ def search_qdrant_node(state: FaqPolicyAgentState):
         unique_policies = {}
         for hit in hits:
             if hit.payload:
-                # Use 'original_policy_id' to ensure we only show one chunk per policy document.
-                # The first time we see a policy_id, we keep it, as results are ordered by score.
+                
                 policy_id = hit.payload.get("original_policy_id")
                 if policy_id and policy_id not in unique_policies:
                     unique_policies[policy_id] = {
@@ -136,11 +132,11 @@ def format_context_node(state: FaqPolicyAgentState):
         context_str = "No specific context found in our documents for your query."
     return {"context_for_llm": context_str}
 
-async def call_llm_node(state: FaqPolicyAgentState): # Make it async if get_llm_rag_response is async
+async def call_llm_node(state: FaqPolicyAgentState): 
     print("--- Node: Calling LLM ---")
-    query = state["rewritten_query"] # Use the rewritten query for context
+    query = state["rewritten_query"] 
     context = state["context_for_llm"]
-    current_chat_history = state.get("chat_history", []) # Get existing history
+    current_chat_history = state.get("chat_history", []) 
 
     # Construct the RAG prompt for the current turn
     rag_prompt_content = f"""Based on the following context, please answer the user's question.
@@ -153,7 +149,7 @@ User Question: {query}
 
 Answer:"""
 
-    # Prepare messages for the LLM: history + system prompt + current RAG user query
+    
     prompt_messages = current_chat_history + [
         {"role": "system", "content": "You are a helpful assistant for an e-commerce store, providing concise and relevant answers based on store policies and FAQs."},
         {"role": "user", "content": rag_prompt_content}
@@ -171,18 +167,17 @@ Answer:"""
 
 def format_final_response_node(state: FaqPolicyAgentState):
     print("--- Node: Formatting Final Response ---")
-    # This node would construct the final dictionary matching your SearchResponse Pydantic model
-    # For example:
+    
     final_response_data = {
         "query_type": "semantic_search_rag_langgraph", # New query type
         "llm_answer": state.get("llm_answer"),
         "direct_product_result": None,
-        "results": [ # Reconstruct SearchResultItem-like dicts from retrieved_documents
+        "results": [
             {
-                "score": doc.get("score"), # Now score is available directly from the stored doc
-                "source_collection": VECTOR_DB_COLLECTION_POLICIES, # Example
+                "score": doc.get("score"), 
+                "source_collection": VECTOR_DB_COLLECTION_POLICIES, 
                 "payload": doc.get("payload"),
-                "retrieved_item": None # Or fetch from DB if needed
+                "retrieved_item": None 
             } for doc in state.get("retrieved_documents", [])
         ]
     }
@@ -197,7 +192,7 @@ def create_faq_policy_graph():
     workflow.add_node("embed_query", embed_query_node)
     workflow.add_node("search_qdrant", search_qdrant_node)
     workflow.add_node("format_context", format_context_node)
-    workflow.add_node("call_llm", call_llm_node) # Use `await call_llm_node` if using LangChain's .ainvoke
+    workflow.add_node("call_llm", call_llm_node) 
     workflow.add_node("format_final_response", format_final_response_node)
 
     workflow.set_entry_point("rewrite_query")
@@ -210,6 +205,3 @@ def create_faq_policy_graph():
 
     app_graph = workflow.compile()
     return app_graph
-
-# You would typically compile the graph once on app startup
-# faq_policy_app = create_faq_policy_graph()

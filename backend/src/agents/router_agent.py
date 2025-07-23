@@ -1,6 +1,6 @@
-from typing import List, TypedDict, Optional # Optional is already here, but good to double check all agent files
+from typing import List, TypedDict, Optional 
 from langgraph.graph import StateGraph, END
-from src.llm_handler import get_llm_classification_response # Use the new classification function
+from src.llm_handler import get_llm_classification_response 
 import logging
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class RouterAgentState(TypedDict):
     original_query: str
     chat_history: List[dict]
-    chosen_agent_name: Optional[str] # e.g., "product_search", "review_search", "faq_policy"
+    chosen_agent_name: Optional[str] 
     error_message: Optional[str]
 
 # --- Node Functions ---
@@ -18,7 +18,7 @@ async def route_query_node(state: RouterAgentState):
     query = state["original_query"]
     chat_history = state.get("chat_history", [])
 
-    # Define the capabilities of each agent for the LLM, now with context awareness
+    
     agent_descriptions = """You are an expert at routing a user's query to the correct agent.
     Based on the user's query and the conversation history, determine which of the following agents is most appropriate.
 
@@ -37,7 +37,7 @@ async def route_query_node(state: RouterAgentState):
 
     chosen_agent = await get_llm_classification_response(prompt_messages)
 
-    # Clean up potential LLM verbosity, e.g., if it says "The best agent is 'product_search'."
+    
     cleaned_chosen_agent = None
     if chosen_agent:
         for valid_name in ["product_search", "review_search", "faq_policy"]:
@@ -68,16 +68,3 @@ def create_router_agent_graph():
 
     app_graph = workflow.compile()
     return app_graph
-
-# Example of how you might test this router agent independently (optional)
-# if __name__ == "__main__":
-#     import asyncio
-#     router_app = create_router_agent_graph()
-#     async def run_test():
-#         result = await router_app.ainvoke({"original_query": "What is your return policy?"})
-#         print(result)
-#         result = await router_app.ainvoke({"original_query": "Tell me about the new iPhone model"})
-#         print(result)
-#         result = await router_app.ainvoke({"original_query": "Are there any good reviews for the Sony headphones?"})
-#         print(result)
-#     asyncio.run(run_test())
